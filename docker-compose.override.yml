@@ -1,0 +1,5 @@
+services:
+  ihasmail:
+   ports: !reset []
+   expose:
+     - 8080
