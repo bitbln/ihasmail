@@ -9,7 +9,11 @@ import { toast } from "@/ui/toast";
 import { useMail, FULL_PROPS, BODY_PROPS } from "./mail";
 import { ensureScheduledMailbox, useScheduled } from "./scheduled";
 import { formatScheduleTime, holdUntil } from "@/lib/schedule";
+import { t as translate } from "@/lib/i18n";
+import { BASE_PATH } from "@/lib/basePath";
 import { settings } from "./settings";
+import { emlFilename } from "@/lib/emlName";
+import { fillPlaceholders, type PlaceholderContext } from "@/lib/templatePlaceholders";
 
 export interface ComposeAttachment {
   id: string;
@@ -80,7 +84,11 @@ interface ComposeState {
   pendingSends: Record<string, { timer: number; toastId: number; draft: Draft }>;
   open(init?: Partial<Draft>): string;
   openDraftEmail(email: Email): Promise<string>;
+  /** Open a message again as a mail that has not been sent yet. */
+  composeAsNew(email: Email): Promise<string>;
   reply(email: Email, mode: "reply" | "replyAll" | "forward", opts?: { all?: boolean }): Promise<string>;
+  /** Forward the message whole, as an attachment, rather than quoted into a new one. */
+  forwardAsAttachment(email: Email): string;
   update(key: string, patch: Partial<Draft>): void;
   close(key: string, opts?: { discard?: boolean }): Promise<void>;
   focus(key: string): void;
@@ -219,6 +227,73 @@ export const useCompose = create<ComposeState>((set, get) => ({
     return d.key;
   },
 
+  /*
+   * The same mail again, as a mail that has never been sent.
+   *
+   * Not a forward and not a reply: a mail that was rejected, or went to an
+   * address with a typo in it, is one you want to send *again* rather than pass
+   * on. So there is no Fwd: on the subject, no quote wrapper around the body,
+   * and the recipients it already had are the recipients it keeps.
+   *
+   * What makes it new is what is left out. `draftId` stays null, or sending
+   * would destroy the message this was made from; `inReplyTo`, `references`,
+   * `relatedEmailId` and `relatedKeyword` stay null, so nothing is threaded
+   * onto the old message and the old message is not marked answered or
+   * forwarded by sending this. The Message-ID and the date are the server's and
+   * `buildEmailObject`'s respectively, and neither is copied from anywhere, so
+   * both are new without anything here asking for it.
+   */
+  async composeAsNew(email) {
+    const mail = useMail.getState();
+    const full = (await mail.getEmails([email.id], true))[0] ?? email;
+    const identities = mail.identities.length ? mail.identities : await mail.loadIdentities();
+    // Sent by you, so send it as you again -- the same rule that reopens a
+    // draft. A mail somebody else sent has no identity of yours to match, and
+    // guessing from who it was addressed to would put a resend behind an alias
+    // that was only ever the receiving end; the account's own default is the
+    // honest answer there.
+    const ident =
+      identities.find((i) => full.from?.some((f) => sameAddress(f.email, i.email))) ??
+      mail.defaultIdentity() ??
+      identities[0];
+    const htmlPart = full.htmlBody?.[0];
+    const textPart = full.textBody?.[0];
+    const html = htmlPart?.partId ? (full.bodyValues?.[htmlPart.partId]?.value ?? "") : "";
+    const text = textPart?.partId ? (full.bodyValues?.[textPart.partId]?.value ?? "") : "";
+    const accountId = mail.accountId!;
+    const cidMap: Record<string, string> = {};
+    const attachments: ComposeAttachment[] = [];
+    for (const a of full.attachments ?? []) {
+      const inline = Boolean(a.cid) && (a.disposition === "inline" || a.type.startsWith("image/"));
+      if (inline && a.cid && a.blobId) cidMap[a.cid] = client.downloadUrl(accountId, a.blobId, a.name ?? "image", a.type, true);
+      attachments.push({ id: uid("a"), name: a.name ?? "attachment", type: a.type, size: a.size, blobId: a.blobId, progress: 100, error: null, cid: a.cid ?? undefined, inline });
+    }
+    const d = blankDraft({
+      identityId: ident?.id ?? null,
+      to: full.to ?? [],
+      cc: full.cc ?? [],
+      bcc: full.bcc ?? [],
+      // The message's own Reply-To if it carried one, which is the setting the
+      // report asks to keep; the identity's only when it did not.
+      replyTo: full.replyTo ?? ident?.replyTo ?? [],
+      showReplyTo: Boolean(full.replyTo?.length || ident?.replyTo?.length),
+      showCc: Boolean(full.cc?.length),
+      showBcc: Boolean(full.bcc?.length),
+      subject: full.subject ?? "",
+      html: html ? sanitizeEmailHtml(html, { cidMap, allowRemote: true }).html : textToHtml(text).replace(/\n/g, "<br>"),
+      text: text || (html ? htmlToText(html) : ""),
+      format: html ? "html" : settings().composeFormat,
+      attachments,
+      // No signature is added, and `signatureHtml` is left empty on purpose.
+      // The body is the sent one, which already ends in whatever signature it
+      // was sent with; appending the identity's would give it two.
+      requestReceipt: Boolean(full["header:Disposition-Notification-To:asAddresses"]?.length),
+      priority: /^[12]/.test(full["header:X-Priority:asText"] ?? "") ? "high" : /^[45]/.test(full["header:X-Priority:asText"] ?? "") ? "low" : "normal",
+    });
+    set((st) => ({ drafts: [...st.drafts, d], activeKey: d.key }));
+    return d.key;
+  },
+
   async reply(email, mode) {
     const mail = useMail.getState();
     const full = (await mail.getEmails([email.id], true))[0] ?? email;
@@ -311,6 +386,29 @@ export const useCompose = create<ComposeState>((set, get) => ({
     return d.key;
   },
 
+  forwardAsAttachment(email) {
+    const accountId = useMail.getState().accountId;
+    const key = get().open({
+      subject: replySubject(email.subject, "Fwd"),
+      relatedEmailId: email.id,
+      relatedKeyword: "$forwarded",
+      replyMode: "forward",
+    });
+    // A message's own blobId *is* its RFC822 blob, and it already lives in this
+    // account -- so this goes through the same path as attach-from-Files and
+    // uploads nothing at all, however large the message.
+    //
+    // It inherits that path's size check as well, which is measured against
+    // `maxSizeUpload` even though nothing is being uploaded. That is worth
+    // knowing rather than working around here: the check belongs to
+    // `addFromFiles` and applies to every by-reference attachment, so if it is
+    // wrong it is wrong in one place and should be fixed there.
+    if (accountId) {
+      void get().addFromFiles(key, [{ accountId, name: emlFilename(email.subject), type: "message/rfc822", size: email.size, blobId: email.blobId }]);
+    }
+    return key;
+  },
+
   update(key, patch) {
     set((s) => ({ drafts: s.drafts.map((d) => (d.key === key ? { ...d, ...patch, dirty: patch.dirty ?? (d.dirty || isContentPatch(patch)) } : d)) }));
     if (isContentPatch(patch)) scheduleAutosave(key, get);
@@ -334,15 +432,15 @@ export const useCompose = create<ComposeState>((set, get) => ({
           /* ignore */
         }
       }
-      toast.show("Draft discarded");
+      toast.show(translate("Draft discarded"));
       return;
     }
     if (d.dirty && (d.to.length || d.subject || hasContent(d))) {
       try {
         await saveDraftInternal(d, get, set, { silent: true, final: true });
-        toast.show("Draft saved");
+        toast.show(translate("Draft saved"));
       } catch (err) {
-        toast.error(`Could not save draft: ${(err as Error).message}`);
+        toast.error(translate("Could not save draft: {error}", { error: (err as Error).message }));
       }
     }
   },
@@ -355,7 +453,7 @@ export const useCompose = create<ComposeState>((set, get) => ({
     const accountId = useMail.getState().accountId;
     if (!accountId) return;
     const max = client.maxSizeUpload;
-    const atts: ComposeAttachment[] = files.map((f) => ({ id: uid("a"), name: f.name, type: f.type || "application/octet-stream", size: f.size, blobId: null, progress: 0, error: f.size > max ? `Larger than ${Math.round(max / 1048576)} MB limit` : null, file: f }));
+    const atts: ComposeAttachment[] = files.map((f) => ({ id: uid("a"), name: f.name, type: f.type || "application/octet-stream", size: f.size, blobId: null, progress: 0, error: f.size > max ? translate("Larger than {size} MB limit", { size: Math.round(max / 1048576) }) : null, file: f }));
     get().update(key, { attachments: [...(get().drafts.find((d) => d.key === key)?.attachments ?? []), ...atts] });
     for (const a of atts) {
       if (a.error || !a.file) continue;
@@ -389,15 +487,33 @@ export const useCompose = create<ComposeState>((set, get) => ({
     const accountId = useMail.getState().accountId;
     if (!accountId || !nodes.length) return;
     const max = client.maxSizeUpload;
-    const atts: ComposeAttachment[] = nodes.map((n) => ({
-      id: uid("a"),
-      name: n.name,
-      type: n.type || "application/octet-stream",
-      size: n.size ?? 0,
-      blobId: n.accountId === accountId ? n.blobId : null,
-      progress: n.accountId === accountId ? 100 : 0,
-      error: (n.size ?? 0) > max ? `Larger than ${Math.round(max / 1048576)} MB limit` : null,
-    }));
+    const atts: ComposeAttachment[] = nodes.map((n) => {
+      /*
+       * `maxSizeUpload` is what the server will accept for a single *upload*
+       * (RFC 8620), so it only bears on a file that is about to be uploaded.
+       *
+       * A blob already in this account is attached by reference and nothing is
+       * sent, however large it is -- which is the whole point of attaching from
+       * Files, and of forwarding a message as an attachment. Applying the limit
+       * to those refused a 60 MB message the server was already holding, on the
+       * grounds that it could not have been uploaded, which it was not being.
+       *
+       * A file from somebody else's account is fetched and re-uploaded into
+       * this one, because a message can only carry blobs from the account
+       * sending it. That upload is real, and the limit is real for it.
+       */
+      const byReference = n.accountId === accountId;
+      const tooLargeToUpload = !byReference && (n.size ?? 0) > max;
+      return {
+        id: uid("a"),
+        name: n.name,
+        type: n.type || "application/octet-stream",
+        size: n.size ?? 0,
+        blobId: byReference ? n.blobId : null,
+        progress: byReference ? 100 : 0,
+        error: tooLargeToUpload ? translate("Larger than {size} MB limit", { size: Math.round(max / 1048576) }) : null,
+      };
+    });
     get().update(key, { attachments: [...(get().drafts.find((d) => d.key === key)?.attachments ?? []), ...atts] });
 
     for (const [i, a] of atts.entries()) {
@@ -426,7 +542,7 @@ export const useCompose = create<ComposeState>((set, get) => ({
     try {
       return await saveDraftInternal(d, get, set, { silent: opts.silent ?? false });
     } catch (err) {
-      if (!opts.silent) toast.error(`Could not save draft: ${(err as Error).message}`);
+      if (!opts.silent) toast.error(translate("Could not save draft: {error}", { error: (err as Error).message }));
       return null;
     }
   },
@@ -449,9 +565,9 @@ export const useCompose = create<ComposeState>((set, get) => ({
       });
       try {
         await sendInternal(d, get);
-        toast.success(scheduling ? `Send scheduled for ${formatScheduleTime(new Date(d.sendAt!))}` : "Message sent");
+        toast.success(scheduling ? translate("Send scheduled for {when}", { when: formatScheduleTime(new Date(d.sendAt!)) }) : translate("Message sent"));
       } catch (err) {
-        toast.error(`Send failed: ${(err as Error).message}`, {
+        toast.error(translate("Send failed: {error}", { error: (err as Error).message }), {
           action: { label: "Open draft", onClick: () => set((s) => ({ drafts: [...s.drafts, { ...d, sending: false, error: (err as Error).message }], activeKey: d.key })) },
           duration: 15000,
         });
@@ -505,8 +621,17 @@ export const useCompose = create<ComposeState>((set, get) => ({
   insertTemplate(key, html, subject) {
     const d = get().drafts.find((x) => x.key === key);
     if (!d) return;
-    const patch: Partial<Draft> = { html: `<div>${sanitizeEditorHtml(html)}</div>${d.html}`, text: `${htmlToText(html)}\n${d.text}` };
-    if (subject && !d.subject) patch.subject = subject;
+    // Placeholders are filled against the draft as it stands right now, which
+    // is why this happens on insert rather than on send: what the template is
+    // filled with is visible and editable afterwards, instead of changing
+    // under the message between writing it and sending it.
+    const ident = d.identityId ? useMail.getState().identities.find((i) => i.id === d.identityId) : undefined;
+    const ctx: PlaceholderContext = { to: d.to, from: ident ? { name: ident.name, email: ident.email } : null, subject: d.subject };
+    // The body is filled once as HTML and the plain-text side derived from the
+    // result, so the two cannot disagree about what a placeholder came to.
+    const filled = fillPlaceholders(html, ctx, { html: true });
+    const patch: Partial<Draft> = { html: `<div>${sanitizeEditorHtml(filled)}</div>${d.html}`, text: `${htmlToText(filled)}\n${d.text}` };
+    if (subject && !d.subject) patch.subject = fillPlaceholders(subject, ctx, { html: false });
     get().update(key, patch);
   },
 }));
@@ -542,6 +667,23 @@ function scheduleAutosave(key: string, get: () => ComposeState) {
   );
 }
 
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/*
+ * How an inline image points at a blob while it is being edited, and how to
+ * find one again on the way out.
+ *
+ * `client.downloadUrl` builds these, so under a subpath they carry the mount
+ * prefix -- and the patterns have to as well. Neither would have failed
+ * loudly. A bare `/api/blob/` still appears *inside* `/mail/api/blob/...`, so
+ * the unanchored replacement would have matched only the tail and left `/mail`
+ * standing in front of a `cid:` reference; the anchored match would simply
+ * have missed, and the message would go out linking to the sender's own
+ * webmail where the picture should be.
+ */
+const BLOB_URL_PREFIX = `${BASE_PATH}/api/blob/`;
+const BLOB_URL_RE = escapeRe(BLOB_URL_PREFIX);
+
 /** Build the JMAP Email creation object from a draft. */
 export async function buildEmailObject(d: Draft, opts: { forSend: boolean; mailboxId?: Id | null }): Promise<Record<string, unknown>> {
   const mail = useMail.getState();
@@ -556,7 +698,7 @@ export async function buildEmailObject(d: Draft, opts: { forSend: boolean; mailb
   // Inline attachments shown via blob URLs in the editor → back to cid: references.
   for (const a of d.attachments) {
     if (a.inline && a.cid && a.blobId && html) {
-      const re = new RegExp(`/api/blob/[^"' )]*${a.blobId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^"' )]*`, "g");
+      const re = new RegExp(`${BLOB_URL_RE}[^"' )]*${escapeRe(a.blobId)}[^"' )]*`, "g");
       html = html.replace(re, `cid:${a.cid}`);
     }
   }
@@ -564,11 +706,11 @@ export async function buildEmailObject(d: Draft, opts: { forSend: boolean; mailb
   const related: EmailBodyPart[] = [];
   const relatedInline: Array<{ blobId: Id; type: string; name: string; cid: string }> = [];
   // Images referencing stored blobs (e.g. signature logos kept in Files) → inline cid parts.
-  if (html && html.includes("/api/blob/")) {
+  if (html && html.includes(BLOB_URL_PREFIX)) {
     const doc = new DOMParser().parseFromString(html, "text/html");
     for (const img of Array.from(doc.querySelectorAll("img"))) {
       const src = img.getAttribute("src") ?? "";
-      const m = /^\/api\/blob\/([^/]+)\/([^/]+)\/([^?]+)(?:\?([^#]*))?/.exec(src);
+      const m = new RegExp(`^${BLOB_URL_RE}([^/]+)/([^/]+)/([^?]+)(?:\\?([^#]*))?`).exec(src);
       if (!m) continue;
       const blobId = decodeURIComponent(m[2]!);
       const name = decodeURIComponent(m[3]!);
@@ -783,7 +925,7 @@ async function sendInternal(d: Draft, _get: () => ComposeState): Promise<void> {
     const created = (s.created?.s ?? {}) as { id?: Id; sendAt?: string; undoStatus?: string };
     const settled = created.sendAt ? Date.parse(created.sendAt) : NaN;
     if (!Number.isNaN(settled) && Math.abs(settled - d.sendAt!) > 60_000) {
-      toast.error(`The server scheduled this for ${formatScheduleTime(new Date(settled))}, not the time requested.`);
+      toast.error(translate("The server scheduled this for {when}, not the time requested.", { when: formatScheduleTime(new Date(settled)) }));
     }
     await useScheduled.getState().load();
   }

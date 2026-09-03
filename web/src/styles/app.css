@@ -105,7 +105,7 @@
  * top of this theme -- and because the default accent ("teal") has no rule of
  * its own, ihasmail.org's own accent is what shows until someone picks another.
  */
-:root[data-palette="ihasmail"] {
+:root[data-theme="dark"][data-palette="ihasmail"] {
   --bg: #0d2430;
   --bg-elev: #12303e;
   --bg-sunken: #0a1c26;
@@ -142,6 +142,368 @@
   --shadow-3: 0 22px 60px -28px rgba(0, 0, 0, 0.75);
   color-scheme: dark;
 }
+
+/* === generated palettes: begin === */
+
+/*
+
+ * Written by scripts/build-palettes.py -- edit the sources there, not here.
+
+ *
+
+ * Every colour is from the palette's own project (all MIT); the published
+
+ * values are recorded in .palette-sources/palettes-upstream.md. The tiers
+
+ * between them are derived, and every text colour is checked against the
+
+ * surface it sits on: 4.5:1 for prose, 3:1 for borders and marks. Several
+
+ * of these palettes do not meet that as published -- Dracula's comment grey
+
+ * is about 3.0:1 on its own background -- so those tiers are lifted, which
+
+ * is why this is arithmetic rather than a hand-written block.
+
+ */
+
+/* ihasmail (light) lifted for contrast: faint #7d969c -> #62757a (2.94 -> 4.55); accent #46cac3 -> #379e98 (1.88 -> 3.04); star #f9a34b -> #c5813b (1.91 -> 3.00); border-strong #b2c5c9 -> #849295 (1.69 -> 3.03) */
+
+:root[data-palette="ihasmail"] {
+  --bg: #f4f9f9;
+  --bg-elev: #ffffff;
+  --bg-sunken: #e7f1f2;
+  --bg-hover: rgba(13, 36, 48, 0.06);
+  --bg-active: rgba(13, 36, 48, 0.11);
+  --fg: #0d2430;
+  --fg-muted: #4a6b74;
+  --fg-faint: #62757a;
+  --border: #cfe2e4;
+  --border-strong: #849295;
+  --accent: #379e98;
+  --accent-fg: #ffffff;
+  --accent-soft: #daeceb;
+  --accent-soft-fg: #28736f;
+  --danger: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.15);
+  --warn: #b45309;
+  --warn-soft: rgba(180, 83, 9, 0.15);
+  --success: #15803d;
+  --success-soft: rgba(21, 128, 61, 0.15);
+  --link: #0e7490;
+  --unread-bg: #ffffff;
+  --read-bg: #edf3f3;
+  --selected-bg: #daeceb;
+  --focus-ring: 0 0 0 3px rgba(55, 158, 152, 0.4);
+  --star: #c5813b;
+  --q1: #0e7490;
+  --q2: #15803d;
+  --q3: #7c3aed;
+  --scrollbar: rgba(74, 107, 116, 0.35);
+  color-scheme: light;
+}
+
+/* dracula (light) lifted for contrast: faint #98937b -> #787461 (2.98 -> 4.53); border-strong #b5b5c1 -> #91919a (1.96 -> 3.01) */
+
+:root[data-palette="dracula"] {
+  --bg: #fffbeb;
+  --bg-elev: #ffffff;
+  --bg-sunken: #f6f1de;
+  --bg-hover: rgba(31, 31, 31, 0.06);
+  --bg-active: rgba(31, 31, 31, 0.11);
+  --fg: #1f1f1f;
+  --fg-muted: #6c664b;
+  --fg-faint: #787461;
+  --border: #cfcfde;
+  --border-strong: #91919a;
+  --accent: #644ac9;
+  --accent-fg: #ffffff;
+  --accent-soft: #e9e2e6;
+  --accent-soft-fg: #644ac9;
+  --danger: #cb3a2a;
+  --danger-soft: rgba(203, 58, 42, 0.15);
+  --warn: #a34d14;
+  --warn-soft: rgba(163, 77, 20, 0.15);
+  --success: #14710a;
+  --success-soft: rgba(20, 113, 10, 0.15);
+  --link: #036a96;
+  --unread-bg: #ffffff;
+  --read-bg: #f8f4e5;
+  --selected-bg: #e9e2e6;
+  --focus-ring: 0 0 0 3px rgba(100, 74, 201, 0.4);
+  --star: #846e15;
+  --q1: #036a96;
+  --q2: #14710a;
+  --q3: #a3144d;
+  --scrollbar: rgba(108, 102, 75, 0.35);
+  color-scheme: light;
+}
+
+/* dracula (dark) lifted for contrast: muted #6272a4 -> #8390b7 (3.03 -> 4.50); faint #687190 -> #8b92aa (2.95 -> 4.60); border-strong #5f6271 -> #717381 (2.35 -> 3.03) */
+
+:root[data-theme="dark"][data-palette="dracula"] {
+  --bg: #282a36;
+  --bg-elev: #2f3140;
+  --bg-sunken: #21222c;
+  --bg-hover: rgba(248, 248, 242, 0.06);
+  --bg-active: rgba(248, 248, 242, 0.11);
+  --fg: #f8f8f2;
+  --fg-muted: #8390b7;
+  --fg-faint: #8b92aa;
+  --border: #44475a;
+  --border-strong: #717381;
+  --accent: #bd93f9;
+  --accent-fg: #282a36;
+  --accent-soft: rgba(189, 147, 249, 0.16);
+  --accent-soft-fg: #bf96f9;
+  --danger: #ff5555;
+  --danger-soft: rgba(255, 85, 85, 0.15);
+  --warn: #ffb86c;
+  --warn-soft: rgba(255, 184, 108, 0.15);
+  --success: #50fa7b;
+  --success-soft: rgba(80, 250, 123, 0.15);
+  --link: #8be9fd;
+  --unread-bg: #2f3140;
+  --read-bg: #21222c;
+  --selected-bg: rgba(189, 147, 249, 0.18);
+  --focus-ring: 0 0 0 3px rgba(189, 147, 249, 0.4);
+  --star: #f1fa8c;
+  --q1: #8be9fd;
+  --q2: #50fa7b;
+  --q3: #ff79c6;
+  --scrollbar: rgba(131, 144, 183, 0.35);
+  color-scheme: dark;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --shadow-3: 0 22px 60px -28px rgba(0, 0, 0, 0.75);
+}
+
+/* gruvbox (light) lifted for contrast: muted #7c6f64 -> #776b60 (4.29 -> 4.56); faint #9f937f -> #746b5d (2.66 -> 4.62); link #427b58 -> #417956 (4.40 -> 4.52); success #79740e -> #746f0d (4.29 -> 4.60); border-strong #beaf91 -> #948871 (1.90 -> 3.07); q2 #79740e -> #746f0d (4.29 -> 4.60) */
+
+:root[data-palette="gruvbox"] {
+  --bg: #fbf1c7;
+  --bg-elev: #f9f5d7;
+  --bg-sunken: #f2e5bc;
+  --bg-hover: rgba(60, 56, 54, 0.06);
+  --bg-active: rgba(60, 56, 54, 0.11);
+  --fg: #3c3836;
+  --fg-muted: #776b60;
+  --fg-faint: #746b5d;
+  --border: #d5c4a1;
+  --border-strong: #948871;
+  --accent: #076678;
+  --accent-fg: #ffffff;
+  --accent-soft: #d9debc;
+  --accent-soft-fg: #076678;
+  --danger: #9d0006;
+  --danger-soft: rgba(157, 0, 6, 0.15);
+  --warn: #af3a03;
+  --warn-soft: rgba(175, 58, 3, 0.15);
+  --success: #746f0d;
+  --success-soft: rgba(116, 111, 13, 0.15);
+  --link: #417956;
+  --unread-bg: #ffffff;
+  --read-bg: #f5ebc3;
+  --selected-bg: #d9debc;
+  --focus-ring: 0 0 0 3px rgba(7, 102, 120, 0.4);
+  --star: #b57614;
+  --q1: #076678;
+  --q2: #746f0d;
+  --q3: #8f3f71;
+  --scrollbar: rgba(119, 107, 96, 0.35);
+  color-scheme: light;
+}
+
+/* gruvbox (dark) lifted for contrast: faint #827768 -> #968d80 (3.36 -> 4.51); danger #fb4934 -> #fb5440 (4.29 -> 4.52); border-strong #675f55 -> #787168 (2.35 -> 3.06) */
+
+:root[data-theme="dark"][data-palette="gruvbox"] {
+  --bg: #282828;
+  --bg-elev: #32302f;
+  --bg-sunken: #1d2021;
+  --bg-hover: rgba(235, 219, 178, 0.06);
+  --bg-active: rgba(235, 219, 178, 0.11);
+  --fg: #ebdbb2;
+  --fg-muted: #a89984;
+  --fg-faint: #968d80;
+  --border: #504945;
+  --border-strong: #787168;
+  --accent: #83a598;
+  --accent-fg: #282828;
+  --accent-soft: rgba(131, 165, 152, 0.16);
+  --accent-soft-fg: #8cab9f;
+  --danger: #fb5440;
+  --danger-soft: rgba(251, 84, 64, 0.15);
+  --warn: #fe8019;
+  --warn-soft: rgba(254, 128, 25, 0.15);
+  --success: #b8bb26;
+  --success-soft: rgba(184, 187, 38, 0.15);
+  --link: #8ec07c;
+  --unread-bg: #32302f;
+  --read-bg: #1d2021;
+  --selected-bg: rgba(131, 165, 152, 0.18);
+  --focus-ring: 0 0 0 3px rgba(131, 165, 152, 0.4);
+  --star: #fabd2f;
+  --q1: #83a598;
+  --q2: #b8bb26;
+  --q3: #d3869b;
+  --scrollbar: rgba(168, 153, 132, 0.35);
+  color-scheme: dark;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --shadow-3: 0 22px 60px -28px rgba(0, 0, 0, 0.75);
+}
+
+/* rose-pine (light) lifted for contrast: muted #797593 -> #716d89 (4.02 -> 4.52); faint #9a96a7 -> #706e7a (2.64 -> 4.58); danger #b4637a -> #a45a6f (3.84 -> 4.50); warn #ea9d34 -> #986622 (2.05 -> 4.51); success #56949f -> #467881 (3.14 -> 4.51); star #ea9d34 -> #be7f2a (2.05 -> 3.07); border-strong #c8c2c1 -> #908c8b (1.61 -> 3.05); q2 #56949f -> #467881 (3.14 -> 4.51); q3 #907aa9 -> #7a6890 (3.47 -> 4.57) */
+
+:root[data-palette="rose-pine"] {
+  --bg: #faf4ed;
+  --bg-elev: #fffaf3;
+  --bg-sunken: #f2e9e1;
+  --bg-hover: rgba(70, 66, 97, 0.06);
+  --bg-active: rgba(70, 66, 97, 0.11);
+  --fg: #464261;
+  --fg-muted: #716d89;
+  --fg-faint: #706e7a;
+  --border: #dfd9d2;
+  --border-strong: #908c8b;
+  --accent: #907aa9;
+  --accent-fg: #ffffff;
+  --accent-soft: #ebe3e3;
+  --accent-soft-fg: #705f84;
+  --danger: #a45a6f;
+  --danger-soft: rgba(164, 90, 111, 0.15);
+  --warn: #986622;
+  --warn-soft: rgba(152, 102, 34, 0.15);
+  --success: #467881;
+  --success-soft: rgba(70, 120, 129, 0.15);
+  --link: #286983;
+  --unread-bg: #ffffff;
+  --read-bg: #f5efe9;
+  --selected-bg: #ebe3e3;
+  --focus-ring: 0 0 0 3px rgba(144, 122, 169, 0.4);
+  --star: #be7f2a;
+  --q1: #286983;
+  --q2: #467881;
+  --q3: #7a6890;
+  --scrollbar: rgba(113, 109, 137, 0.35);
+  color-scheme: light;
+}
+
+/* rose-pine (dark) lifted for contrast: faint #6c6982 -> #828095 (3.35 -> 4.60); success #31748f -> #5089a0 (3.38 -> 4.56); border-strong #423f56 -> #666376 (1.75 -> 3.04); q2 #31748f -> #5089a0 (3.38 -> 4.56) */
+
+:root[data-theme="dark"][data-palette="rose-pine"] {
+  --bg: #191724;
+  --bg-elev: #1f1d2e;
+  --bg-sunken: #14121f;
+  --bg-hover: rgba(224, 222, 244, 0.06);
+  --bg-active: rgba(224, 222, 244, 0.11);
+  --fg: #e0def4;
+  --fg-muted: #908caa;
+  --fg-faint: #828095;
+  --border: #26233a;
+  --border-strong: #666376;
+  --accent: #c4a7e7;
+  --accent-fg: #191724;
+  --accent-soft: rgba(196, 167, 231, 0.16);
+  --accent-soft-fg: #c4a7e7;
+  --danger: #eb6f92;
+  --danger-soft: rgba(235, 111, 146, 0.15);
+  --warn: #f6c177;
+  --warn-soft: rgba(246, 193, 119, 0.15);
+  --success: #5089a0;
+  --success-soft: rgba(80, 137, 160, 0.15);
+  --link: #9ccfd8;
+  --unread-bg: #1f1d2e;
+  --read-bg: #14121f;
+  --selected-bg: rgba(196, 167, 231, 0.18);
+  --focus-ring: 0 0 0 3px rgba(196, 167, 231, 0.4);
+  --star: #f6c177;
+  --q1: #9ccfd8;
+  --q2: #5089a0;
+  --q3: #c4a7e7;
+  --scrollbar: rgba(144, 140, 170, 0.35);
+  color-scheme: dark;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --shadow-3: 0 22px 60px -28px rgba(0, 0, 0, 0.75);
+}
+
+/* tokyo-night (light) lifted for contrast: faint #777a8b -> #646675 (3.44 -> 4.60); border-strong #acaeb6 -> #83848a (1.79 -> 3.02) */
+
+:root[data-palette="tokyo-night"] {
+  --bg: #e6e7ed;
+  --bg-elev: #f2f3f7;
+  --bg-sunken: #d6d8df;
+  --bg-hover: rgba(52, 59, 89, 0.06);
+  --bg-active: rgba(52, 59, 89, 0.11);
+  --fg: #343b59;
+  --fg-muted: #484c61;
+  --fg-faint: #646675;
+  --border: #c1c2c7;
+  --border-strong: #83848a;
+  --accent: #2959aa;
+  --accent-fg: #ffffff;
+  --accent-soft: #ccd3e4;
+  --accent-soft-fg: #2959aa;
+  --danger: #8c4351;
+  --danger-soft: rgba(140, 67, 81, 0.15);
+  --warn: #8f5e15;
+  --warn-soft: rgba(143, 94, 21, 0.15);
+  --success: #385f0d;
+  --success-soft: rgba(56, 95, 13, 0.15);
+  --link: #006c86;
+  --unread-bg: #ffffff;
+  --read-bg: #e1e2e9;
+  --selected-bg: #ccd3e4;
+  --focus-ring: 0 0 0 3px rgba(41, 89, 170, 0.4);
+  --star: #8f5e15;
+  --q1: #006c86;
+  --q2: #385f0d;
+  --q3: #65359d;
+  --scrollbar: rgba(72, 76, 97, 0.35);
+  color-scheme: light;
+}
+
+/* tokyo-night (dark) lifted for contrast: border-strong #4b506c -> #62677f (2.17 -> 3.06) */
+
+:root[data-theme="dark"][data-palette="tokyo-night"] {
+  --bg: #1a1b26;
+  --bg-elev: #1f2130;
+  --bg-sunken: #16161e;
+  --bg-hover: rgba(192, 202, 245, 0.06);
+  --bg-active: rgba(192, 202, 245, 0.11);
+  --fg: #c0caf5;
+  --fg-muted: #a9b1d6;
+  --fg-faint: #7e84a1;
+  --border: #363b54;
+  --border-strong: #62677f;
+  --accent: #7aa2f7;
+  --accent-fg: #1a1b26;
+  --accent-soft: rgba(122, 162, 247, 0.16);
+  --accent-soft-fg: #7aa2f7;
+  --danger: #f7768e;
+  --danger-soft: rgba(247, 118, 142, 0.15);
+  --warn: #e0af68;
+  --warn-soft: rgba(224, 175, 104, 0.15);
+  --success: #9ece6a;
+  --success-soft: rgba(158, 206, 106, 0.15);
+  --link: #7dcfff;
+  --unread-bg: #1f2130;
+  --read-bg: #16161e;
+  --selected-bg: rgba(122, 162, 247, 0.18);
+  --focus-ring: 0 0 0 3px rgba(122, 162, 247, 0.4);
+  --star: #e0af68;
+  --q1: #7dcfff;
+  --q2: #9ece6a;
+  --q3: #bb9af7;
+  --scrollbar: rgba(169, 177, 214, 0.35);
+  color-scheme: dark;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --shadow-3: 0 22px 60px -28px rgba(0, 0, 0, 0.75);
+}
+
+/* === generated palettes: end === */
 
 /* Accent variants */
 :root[data-accent="blue"] { --accent: #2563eb; --accent-soft: #dbeafe; --accent-soft-fg: #1e3a8a; --selected-bg: #dbeafe; --focus-ring: 0 0 0 3px rgba(37,99,235,.35); --link:#1d4ed8; }
@@ -311,6 +673,53 @@ a.menu-item:hover { color: var(--fg); }
 .dialog-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 20px 16px; border-top: 1px solid var(--border); }
 .dialog-foot .left { margin-right: auto; }
 
+/* Two mutually exclusive views of the same thing, sized to sit in a dialog
+   footer beside the ordinary buttons (see ui/filepreview.tsx). */
+.segmented { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.segmented button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; font-size: .9em; color: var(--fg-muted); background: none; }
+.segmented button + button { border-left: 1px solid var(--border); }
+.segmented button:hover { background: var(--bg-hover); color: var(--fg); }
+.segmented button.active { background: var(--accent-soft); color: var(--accent-soft-fg); font-weight: 600; }
+.segmented button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.segmented.left { margin-right: auto; }
+.dialog-foot .hint.left { margin-right: auto; }
+.dialog-foot textarea.code, .dialog-body > textarea.code { font-family: var(--font-mono); }
+
+/* Rendered Markdown in the file viewer. Deliberately plain: this is somebody's
+   notes, not a web page, and the point is to read it. */
+.md-body { max-height: 65vh; overflow: auto; padding: 4px 2px; overflow-wrap: anywhere; }
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4 { margin: 1.2em 0 .5em; line-height: 1.25; font-weight: 650; }
+.md-body h1 { font-size: 1.5em; }
+.md-body h2 { font-size: 1.28em; }
+.md-body h3 { font-size: 1.12em; }
+.md-body h4 { font-size: 1em; }
+.md-body p, .md-body ul, .md-body ol, .md-body blockquote, .md-body table { margin: 0 0 .8em; }
+.md-body ul, .md-body ol { padding-left: 1.6em; }
+.md-body li { margin: .2em 0; }
+.md-body a { color: var(--link); }
+.md-body code { font-family: var(--font-mono); font-size: .9em; background: var(--bg-sunken); border-radius: 4px; padding: .1em .35em; }
+.md-body pre { background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; overflow-x: auto; }
+.md-body pre code { background: none; padding: 0; }
+.md-body blockquote { margin-left: 0; padding-left: 12px; border-left: 3px solid var(--border-strong); color: var(--fg-muted); }
+.md-body hr { border: 0; border-top: 1px solid var(--border); margin: 1.2em 0; }
+.md-body table { border-collapse: collapse; }
+.md-body th, .md-body td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; }
+.md-body th { background: var(--bg-sunken); }
+/* An image is shown as its link, never fetched -- see lib/markdown.ts. */
+.md-body .md-img::before { content: "🖼 "; }
+.md-body .md-img { color: var(--link); text-decoration: underline dotted; text-underline-offset: 2px; }
+/* "This occurrence or the whole series" — one button per answer, stacked, so
+   the destructive one is read rather than landed on by muscle memory. */
+.dialog-choices { display: flex; flex-direction: column; gap: 8px; }
+.dialog-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; text-align: left; padding: 10px 12px; height: auto; }
+.dialog-choice small { font-weight: 400; opacity: 0.75; }
+/* Destructive, the way .menu-item.danger is: a red label on the ordinary
+   surface. A filled red button in a list of answers is the loudest thing in the
+   dialog, which is wrong when it is the answer that loses your work. */
+.dialog-choice.danger { color: var(--danger); }
+
 /* Toasts ----------------------------------------------------------------- */
 .toast-host { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 3000; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; padding: 0 12px; width: 100%; max-width: 520px; }
 .toast { pointer-events: auto; display: flex; align-items: center; gap: 12px; background: #1f2937; color: #fff; padding: 10px 10px 10px 16px; border-radius: var(--radius); box-shadow: var(--shadow-2); min-width: 260px; max-width: 100%; position: relative; overflow: hidden; animation: rise .2s var(--ease); }
@@ -345,13 +754,27 @@ a.menu-item:hover { color: var(--fg); }
 /* ==========================================================================
    App shell
    ========================================================================== */
-.app { height: 100%; display: grid; grid-template-rows: var(--topbar-h) 1fr; overflow: hidden; }
+/*
+ * The column is stated, and stated as `minmax(0, 1fr)`.
+ *
+ * A grid with only rows named gets an implicit `auto` column, which sizes to
+ * its widest child's min-content -- and the top bar's min-content is the
+ * search field plus the account buttons, about 470px. On a desktop nobody sees
+ * it; on a 390px phone the whole app was 84px wider than the screen, so every
+ * message row ran off the right edge with its date beyond the glass. `1fr`
+ * alone would not have fixed it: that is `minmax(auto, 1fr)`, and the `auto`
+ * floor is the same min-content. The zero floor is the part that lets the top
+ * bar shrink instead of setting the width for everything below it.
+ */
+.app { height: 100%; display: grid; grid-template-rows: var(--topbar-h) 1fr; grid-template-columns: minmax(0, 1fr); overflow: hidden; }
 .topbar { display: flex; align-items: center; gap: 8px; padding: 0 12px; background: var(--bg); position: relative; z-index: 50; }
 .topbar .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 1.2em; letter-spacing: -.01em; color: var(--fg); text-decoration: none; padding-right: 8px; min-width: 0; }
 .topbar .brand img { width: 34px; height: 34px; object-fit: contain; }
 .topbar .brand .brand-name { color: #14b8a6; }
 .topbar .brand .brand-name span { color: var(--fg-muted); font-weight: 500; }
-.searchbar { flex: 1 1 auto; max-width: 720px; margin: 0 auto; position: relative; }
+/* `min-width: 0`, or the flex default of `auto` holds the search field at its
+   own min-content and the account buttons beside it are pushed off a phone. */
+.searchbar { flex: 1 1 auto; min-width: 0; max-width: 720px; margin: 0 auto; position: relative; }
 .searchbar .search-input { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 8px 0 14px; border-radius: 999px; background: var(--bg-sunken); border: 1px solid transparent; transition: background .12s, box-shadow .12s, border-color .12s; }
 .searchbar .search-input:focus-within { background: var(--bg-elev); box-shadow: var(--shadow-1); border-color: var(--border); }
 .searchbar input { flex: 1; border: 0; background: transparent; outline: none; min-width: 0; height: 100%; }
@@ -383,8 +806,8 @@ a.menu-item:hover { color: var(--fg); }
 @keyframes push-pulse { 50% { opacity: .45; } }
 @media (prefers-reduced-motion: reduce) { .push-dot.connecting { animation: none; } }
 
-.app-body { display: grid; grid-template-columns: var(--sidebar-w) 1fr; min-height: 0; transition: grid-template-columns .2s var(--ease); }
-.app-body.collapsed { grid-template-columns: var(--sidebar-w-collapsed) 1fr; }
+.app-body { display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); min-height: 0; transition: grid-template-columns .2s var(--ease); }
+.app-body.collapsed { grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr); }
 .sidebar { display: flex; flex-direction: column; min-height: 0; padding: 4px 8px 8px 8px; gap: 2px; overflow: hidden; }
 .sidebar-scroll { overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; padding-bottom: 8px; }
 .compose-btn { display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 22px 0 18px; margin: 6px 4px 12px; border-radius: 16px; background: var(--bg-elev); box-shadow: var(--shadow-1); font-weight: 600; font-size: 1em; color: var(--fg); transition: box-shadow .15s, transform .05s, background .12s; white-space: nowrap; }
@@ -429,6 +852,27 @@ a.menu-item:hover { color: var(--fg); }
 .nav-item.folder-row.depth-4 { --folder-indent: 64px; }
 .nav-item.folder-row .nav-twisty { position: absolute; left: calc(8px + var(--folder-indent)); top: 50%; transform: translateY(-50%); margin: 0; }
 /* Labels sit in the same column: a 20px slot matching the folder icons. */
+/* ---- Drill-down (phones; see mail/MailboxTree.tsx) ---- */
+/*
+ * No indent to pay for, so the name gets the width the tree was spending on
+ * depth. The twisty's 30px gutter goes with it -- nothing is ever drawn in it
+ * here, whether or not the folder has children.
+ *
+ * Scoped to the list rather than to the rows that offer a drill, which is the
+ * distinction the first cut got wrong: only folders WITH children carried the
+ * class, so they sat 18px left of every folder without any and the column of
+ * icons came apart. Whether a folder has children is not a reason to hang it
+ * somewhere else.
+ */
+.folder-drill .nav-item.folder-row { padding-left: 12px; }
+.nav-item.folder-row .drill-into { width: 44px; height: 100%; border-radius: 0; margin-right: -12px; color: var(--fg-faint); }
+.nav-item.folder-row .drill-into:hover { background: var(--bg-hover); color: var(--fg); }
+/* The row it belongs to is a link and paints its own active state; a second
+   filled rectangle inside it reads as a separate selected thing. */
+.nav-item.folder-row.active .drill-into { color: inherit; }
+.drill-back { width: 100%; border: 0; background: none; font: inherit; text-align: left; cursor: pointer; color: var(--fg-muted); padding-left: 12px; }
+.drill-back:hover { background: var(--bg-hover); color: var(--fg); }
+.drill-back svg { flex: 0 0 auto; }
 .nav-item.folder-row .nav-label-color { flex: 0 0 20px; width: 20px; height: 20px; border-radius: 0; display: inline-flex; align-items: center; justify-content: center; }
 .nav-item.folder-row .nav-label-color::before { content: ""; width: 11px; height: 11px; border-radius: 3px; background: var(--label-color, var(--accent)); }
 .collapsed .nav-item { justify-content: center; padding: 0; margin: 0 auto; width: 44px; border-radius: 999px; }
@@ -588,8 +1032,12 @@ a.menu-item:hover { color: var(--fg); }
 .attachment .att-icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: var(--accent-soft); color: var(--accent-soft-fg); flex: 0 0 auto; overflow: hidden; }
 .attachment .att-icon img { width: 100%; height: 100%; object-fit: cover; }
 .attachment .att-text { flex: 1; min-width: 0; }
-.attachment .att-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: .92em; }
-.attachment .att-size { color: var(--fg-muted); font-size: .8em; }
+/* Both are spans, and `overflow`/`text-overflow` do nothing on an inline
+   element -- so the name never truncated and the size ran on after it on the
+   same line. Only long names showed it, which is every .eml named from a
+   subject. */
+.attachment .att-name { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: .92em; }
+.attachment .att-size { display: block; color: var(--fg-muted); font-size: .8em; }
 .attachment .att-actions { display: none; gap: 0; }
 .attachment:hover .att-actions { display: flex; }
 .attachment:hover .att-size { display: none; }
@@ -602,7 +1050,10 @@ a.menu-item:hover { color: var(--fg); }
 .vcard-card { margin: 0 16px 12px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-sunken); display: flex; align-items: center; gap: 12px; }
 .unsubscribe-row { margin: 0 16px 8px; font-size: .88em; color: var(--fg-muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .reply-box { margin: 8px 16px 24px; }
-.reply-box .reply-prompt { display: flex; gap: 8px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--fg-muted); }
+/* Wraps, because it does not fit. Three labelled buttons and an overflow need
+   about 390px of it, which a 430px phone has and a 360px one does not -- and it
+   was already over the line on the smaller ones before the overflow was added. */
+.reply-box .reply-prompt { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--fg-muted); }
 .reply-box .reply-prompt button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border-strong); color: var(--fg); font-weight: 500; }
 .reply-box .reply-prompt button:hover { background: var(--bg-hover); }
 .no-thread { height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: var(--fg-muted); }
@@ -690,7 +1141,7 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
 .settings-layout { display: grid; grid-template-columns: 240px 1fr; height: 100%; min-height: 0; flex: 1; }
 .settings-nav { border-right: 1px solid var(--border); padding: 12px 8px; overflow-y: auto; }
 .settings-nav .nav-item { margin-right: 0; border-radius: var(--radius-sm); }
-.settings-content { overflow-y: auto; padding: 24px 32px 64px; max-width: 860px; }
+.settings-content { --pad-b: 64px; overflow-y: auto; padding: 24px 32px var(--pad-b); max-width: 860px; }
 .settings-content h1 { margin: 0 0 4px; font-size: 1.5em; font-weight: 650; }
 .settings-content h2 { margin: 28px 0 12px; font-size: 1.05em; font-weight: 650; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
 .settings-content .lead { color: var(--fg-muted); margin: 0 0 20px; }
@@ -714,6 +1165,18 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
 .rule-card.drop-below { box-shadow: inset 0 -3px 0 0 var(--accent); }
 .rule-card .drag-handle { display: flex; align-items: center; padding: 2px; margin-left: -4px; color: var(--fg-faint); cursor: grab; touch-action: none; }
 .rule-card .drag-handle:active { cursor: grabbing; }
+
+/* The bar that says whether there is unsaved work, kept where it can be read.
+   Unpinned it sat after the rules, which on a full list means off the bottom of
+   the window: the one indicator that anything was pending was the one thing you
+   had to scroll to find (issue #175).
+
+   The offset is what pins it flush. A sticky `bottom: 0` stops at the scroll
+   container's padding box, which leaves the pane's bottom padding as a strip
+   below the bar for rules to scroll through; sticking to minus that padding
+   closes it, on the narrow layout's larger padding as well. */
+.save-bar { position: sticky; bottom: calc(var(--pad-b, 0px) * -1); z-index: 2; margin-top: 12px; padding: 12px 0; background: var(--bg); border-top: 1px solid var(--border); }
+.save-bar .unsaved { color: var(--warn); font-weight: 600; font-size: .9em; }
 .rule-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; align-items: center; margin-bottom: 8px; }
 .rule-row.actions { grid-template-columns: 1fr 2fr auto; }
 /* A header typed by hand needs a box of its own, alongside the comparator. */
@@ -856,6 +1319,31 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
 .freebusy .fb-bar { flex: 1; height: 14px; background: var(--bg-sunken); border-radius: 4px; position: relative; overflow: hidden; }
 .freebusy .fb-busy { position: absolute; top: 0; bottom: 0; background: var(--danger); opacity: .65; }
 .freebusy .fb-window { position: absolute; top: 0; bottom: 0; border: 2px solid var(--accent); border-radius: 3px; }
+/* The hour and day marks, and the labels above them. Without these the bar says
+   only "somewhere in here", and which hours it covered was a guess (issue #172). */
+.freebusy .fb-axis-row { height: 14px; }
+.freebusy .fb-axis { flex: 1; position: relative; height: 100%; }
+.freebusy .fb-axis-label { position: absolute; top: 0; font-size: .78em; color: var(--fg-muted); transform: translateX(-50%); white-space: nowrap; }
+/* Midnight and the far edge sit on the ends, where half of each would be cut off. */
+.freebusy .fb-axis-label[style*="left: 0%"] { transform: none; }
+.freebusy .fb-axis-label.end { left: auto; right: 0; transform: none; }
+.freebusy .fb-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); }
+.freebusy .fb-tick.major { background: var(--fg-faint); }
+.freebusy .fb-head { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; font-size: .85em; }
+.freebusy .fb-range { font-weight: 600; }
+.freebusy .fb-self { font-weight: 600; }
+/* A bar is somewhere to put the event, not only something to read. */
+.freebusy .fb-bar { cursor: crosshair; }
+.freebusy .fb-guide { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--fg); opacity: .55; pointer-events: none; }
+/*
+ * "We cannot say", which is not the same as "free" and must not look like it.
+ * Somebody outside this server has no free/busy to read, and an empty bar in a
+ * grid reads as an empty diary -- the one reading that is certainly wrong.
+ */
+.freebusy .fb-bar.no-data {
+  background-image: repeating-linear-gradient(135deg, var(--bg-sunken), var(--bg-sunken) 4px, var(--border) 4px, var(--border) 8px);
+  cursor: crosshair;
+}
 
 /* ==========================================================================
    Files
@@ -893,6 +1381,67 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
 .login-card .pw-wrap { position: relative; }
 .login-card .pw-wrap .icon-btn { position: absolute; right: 2px; top: 1px; }
 
+/* The translate boundary is a wrapper with no appearance of its own; it must
+   not interrupt the flex/grid chain the panes inside it rely on. */
+.translate-boundary { display: contents; }
+
+/* ==========================================================================
+   Touch gestures (see lib/touch.ts)
+   ========================================================================== */
+
+/*
+ * `pan-y` is what makes a swipe possible without costing a scroll: the browser
+ * keeps the vertical drag for itself, at its own frame rate, and only sends us
+ * the horizontal movement it now knows it will not use. Without it every
+ * pointermove would arrive after the scroll had already started, and the list
+ * would stutter on the way past.
+ */
+/*
+ * `pinch-zoom` is listed alongside `pan-y` rather than left implied: naming any
+ * value at all drops every gesture not named, so a bare `pan-y` also told the
+ * browser not to zoom here. Pinch worked on an open message and died on the
+ * list, which read as the zoom being broken at random. The swipe is unaffected
+ * -- horizontal is still not in the list, so it still arrives here.
+ */
+.msg-row { touch-action: pan-y pinch-zoom; -webkit-touch-callout: none; }
+.msg-row.swiping { z-index: 4; box-shadow: var(--shadow-2); }
+/* The row being dragged is the one thing on screen that must not lag. */
+.msg-row.swiping, .mail-list-pull { will-change: transform; }
+/* Stop a pull at the top of the list from dragging the page behind it. */
+.mail-list { overscroll-behavior-y: contain; }
+
+/* The strip a swiped row slides off to reveal, painted into the row's slot. */
+.msg-swipe { position: absolute; left: 0; right: 0; z-index: 1; display: flex; align-items: center; padding: 0 22px; color: #fff; border-bottom: 1px solid var(--border); }
+.msg-swipe.from-left { justify-content: flex-start; }
+.msg-swipe.from-right { justify-content: flex-end; }
+.msg-swipe.danger { background: var(--danger); }
+.msg-swipe.warn { background: var(--warn); }
+.msg-swipe.accent { background: var(--accent); color: var(--accent-fg); }
+.msg-swipe.neutral { background: var(--fg-muted); }
+/*
+ * Dim until the swipe is far enough to fire, then full strength and a little
+ * larger. It is the same promise the haptic tap makes, for anyone whose phone
+ * has no motor or has it switched off.
+ */
+.msg-swipe-act { display: inline-flex; align-items: center; gap: 10px; font-weight: 650; opacity: .72; transform: scale(.94); transition: opacity .12s var(--ease), transform .12s var(--ease); }
+.msg-swipe.armed .msg-swipe-act { opacity: 1; transform: none; }
+
+/* Pull to refresh: a zero-height sticky perch for the dial, so an unpulled
+   list gives up no space to it. */
+.ptr { position: sticky; top: 0; left: 0; height: 0; z-index: 5; pointer-events: none; }
+.ptr-dial { position: absolute; left: 50%; top: 0; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50%; background: var(--bg-elev); border: 1px solid var(--border); box-shadow: var(--shadow-2); color: var(--fg-muted); }
+.ptr-dial.armed { color: var(--accent); border-color: var(--accent); }
+
+/*
+ * A tap that leaves a grey rectangle behind reads as a rendering glitch rather
+ * than as feedback, and every surface here has a :active or a ripple of its own.
+ */
+@media (hover: none) {
+  * { -webkit-tap-highlight-color: transparent; }
+  .msg-row:active { background: var(--bg-hover); }
+  .nav-item, .module-link, .mobile-tabbar a { -webkit-touch-callout: none; }
+}
+
 /* ==========================================================================
    Responsive
    ========================================================================== */
@@ -916,7 +1465,7 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
   .settings-layout.section .settings-nav { display: none; }
   .settings-layout.root .settings-nav { display: block; border-right: 0; }
   .settings-layout.root .settings-content { display: none; }
-  .settings-content { padding: 16px 16px 80px; }
+  .settings-content { --pad-b: 80px; padding: 16px 16px var(--pad-b); }
   .contacts-layout { grid-template-columns: 1fr; }
   .contacts-books { display: none; }
   .contacts-layout.detail .contacts-list { display: none; }
@@ -926,7 +1475,7 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
 }
 @media (max-width: 768px) {
   :root { --topbar-h: 52px; }
-  .app-body, .app-body.collapsed { grid-template-columns: 1fr; }
+  .app-body, .app-body.collapsed { grid-template-columns: minmax(0, 1fr); }
   .sidebar { position: fixed; top: 0; bottom: 0; left: 0; width: min(300px, 85vw); background: var(--bg-elev); z-index: 950; transform: translateX(-105%); transition: transform .22s var(--ease); box-shadow: var(--shadow-3); padding-top: 12px; }
   .sidebar.open { transform: none; }
   .collapsed .sidebar .nav-item, .collapsed .sidebar .compose-btn { all: revert; }
@@ -936,21 +1485,41 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
   .drawer-backdrop { display: block; position: fixed; inset: 0; z-index: 940; background: rgba(2,6,23,.45); opacity: 0; pointer-events: none; transition: opacity .2s; }
   .drawer-backdrop.open { opacity: 1; pointer-events: auto; }
   .main { border-radius: 0; border: 0; }
-  .topbar { padding: 0 6px; gap: 4px; }
+  /*
+    index.html asks for `viewport-fit=cover`, which is what lets the app paint
+    under a notch and behind the home indicator — and what makes it this
+    stylesheet's job to keep anything readable out from under them. The insets
+    are zero everywhere else, so these need no media query of their own.
+  */
+  .topbar { padding: 0 max(6px, env(safe-area-inset-right)) 0 max(6px, env(safe-area-inset-left)); gap: 4px; }
   .topbar .brand .brand-name { display: none; }
   .searchbar .search-input { height: 40px; }
   .topbar-actions .hide-mobile { display: none; }
   .msg-row { padding-right: 8px; }
   .mail-list { padding-bottom: 72px; }
-  .composer { width: 100vw; max-width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; position: fixed; inset: 0; }
-  .composer.minimized { height: 44px; width: 100vw; top: auto; bottom: 0; }
+    /*
+    `dvh`, not `vh`. On a phone browser `100vh` is the tall layout viewport that
+    ignores the address bar, so a full-screen composer put its Send button
+    behind the toolbar until the page was scrolled — which a fixed element
+    cannot be. In an installed PWA there is no bar and the two agree.
+  */
+  .composer { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; position: fixed; inset: 0; }
+  .composer.minimized { height: calc(44px + env(safe-area-inset-bottom)); width: 100vw; top: auto; bottom: 0; }
   .composer-dock { right: 0; }
-  .dialog { max-height: calc(100vh - 16px); }
-  .fab { display: flex; position: fixed; right: 18px; bottom: 78px; width: 56px; height: 56px; border-radius: 18px; background: var(--accent); color: var(--accent-fg); align-items: center; justify-content: center; box-shadow: var(--shadow-2); z-index: 700; }
-  .mobile-tabbar { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; height: 60px; background: var(--bg-elev); border-top: 1px solid var(--border); z-index: 700; padding-bottom: env(safe-area-inset-bottom); }
+  .dialog { max-height: calc(100dvh - 16px); }
+  .fab { display: flex; position: fixed; right: calc(18px + env(safe-area-inset-right)); bottom: calc(78px + env(safe-area-inset-bottom)); width: 56px; height: 56px; border-radius: 18px; background: var(--accent); color: var(--accent-fg); align-items: center; justify-content: center; box-shadow: var(--shadow-2); z-index: 700; }
+  /* The bar grows by the home indicator rather than hiding behind it, and
+     `.main` below reserves exactly that much. */
+  .mobile-tabbar { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; height: calc(60px + env(safe-area-inset-bottom)); background: var(--bg-elev); border-top: 1px solid var(--border); z-index: 700; padding-bottom: env(safe-area-inset-bottom); }
   .mobile-tabbar a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: var(--fg-muted); text-decoration: none; font-size: 11px; }
   .mobile-tabbar a.active { color: var(--accent); }
-  .main { padding-bottom: 60px; }
+  .main { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
+  .sidebar { padding-bottom: env(safe-area-inset-bottom); padding-left: env(safe-area-inset-left); }
+  /* Lines the close up with the hamburger underneath it: same height as the
+     top bar, same 12px in from the edge, so the second press lands where the
+     first one did. The negative margin cancels the drawer's own padding-top,
+     which would otherwise push it a row lower than the thing it replaces. */
+  .drawer-head { display: flex; align-items: center; height: var(--topbar-h); margin-top: -12px; padding-left: max(6px, env(safe-area-inset-left)); }
   .thread-subject { padding: 14px 16px 8px; }
   .message { margin: 0 8px 8px; }
   .message-head { padding: 10px 12px; }
@@ -963,16 +1532,146 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
   .files-table .hide-mobile { display: none; }
   .event-popover { width: calc(100vw - 24px); }
 }
+/*
+ * Touch targets.
+ *
+ * `pointer: coarse` rather than a width, for the reason ui/misc.tsx gives about
+ * useIsTouch: width decides the layout, the pointer decides what has to be
+ * aimed at. A tablet in landscape is a wide screen with fat targets.
+ *
+ * Everything here was under the 44px a fingertip actually covers -- the top bar
+ * icons at 36px (the search filter at 30), the folder twisty at 18, the row ⋮
+ * at 24. Growing the boxes would reflow a top bar that has no room to give, so
+ * each control keeps the size it draws at and gains a transparent hit area
+ * centred on it. Rows grow for real, because a 44px hit area inside a 36px row
+ * would reach into the rows above and below and steal their taps.
+ */
+@media (pointer: coarse) {
+  .icon-btn, .nav-twisty { position: relative; }
+  /* `.drill-into` already draws at 44px and is excluded: expanding a control
+     that is big enough only lets it reach into its neighbour. */
+  .icon-btn:not(.drill-into)::after, .nav-twisty[role="button"]::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+  }
+  /*
+   * The ⋮ is the exception, and narrower on purpose. It sits immediately left
+   * of the drill chevron, and at a full 44px wide the two hit areas overlapped
+   * by 4px -- so the right edge of "folder options" silently drilled instead.
+   * The row is 44px tall here, so it still gets the full height, which is the
+   * axis a thumb actually misses on.
+   */
+  .nav-item .nav-more::after { width: max(100%, 36px); }
+  .sidebar .nav-item, .cal-list-item { height: 44px; }
+  /* The hamburger is the one control in the corner a thumb is worst at, so it
+     gets real distance from the bezel rather than just a wider hit area. */
+  /* Both, together: the close in the drawer stands exactly on the hamburger it
+     covers, and it only does that if the two are moved by the same rule. */
+  .topbar, .drawer-head { padding-left: max(12px, env(safe-area-inset-left)); }
+}
 @media (hover: none) {
   .msg-row .msg-check { opacity: 1; }
   .msg-row .msg-actions { display: none !important; }
   .msg-row:hover .msg-meta .msg-date { display: inline; }
   .nav-item .nav-more, .cal-list-item .nav-more { opacity: 1; }
 }
+/*
+ * Print.
+ *
+ * Paper has no theme. Whatever palette is on screen, the tokens are pinned to
+ * a light, unpainted set here -- backgrounds white rather than the light
+ * theme's greys, since a printer would otherwise lay ink over the whole sheet.
+ * Doing it on the tokens rather than per rule is what reaches the message
+ * body: it renders in a shadow root this stylesheet cannot select into, and
+ * follows the app theme through inherited custom properties (see
+ * EMAIL_BASE_CSS in lib/html.ts). Mail that brings colours of its own is left
+ * alone -- it is not themed in the first place.
+ *
+ * `!important` rather than a longer selector: the dark palettes sit on
+ * :root[data-theme] and :root[data-palette][data-accent], and out-specifying
+ * every one of them is a chain that the next palette breaks.
+ */
 @media print {
-  .topbar, .sidebar, .mail-list-pane, .thread-toolbar, .composer-dock, .toast-host, .mobile-tabbar, .fab, .reply-box, .thread-actions, .quote-toggle { display: none !important; }
+  :root {
+    --bg: #fff !important;
+    --bg-elev: #fff !important;
+    --bg-sunken: #fff !important;
+    --bg-hover: transparent !important;
+    --bg-active: transparent !important;
+    --unread-bg: #fff !important;
+    --read-bg: #fff !important;
+    --selected-bg: transparent !important;
+    --fg: #000 !important;
+    --fg-muted: #3a3a3a !important;
+    --fg-faint: #5a5a5a !important;
+    --border: #ccc !important;
+    --border-strong: #999 !important;
+    --accent: #0f766e !important;
+    --accent-fg: #fff !important;
+    --accent-soft: transparent !important;
+    --accent-soft-fg: #0b5750 !important;
+    --danger: #b91c1c !important;
+    --danger-soft: transparent !important;
+    --warn: #92400e !important;
+    --warn-soft: transparent !important;
+    --success: #15803d !important;
+    --success-soft: transparent !important;
+    --link: #0e7490 !important;
+    --star: #444 !important;
+    --q1: #1d4ed8 !important;
+    --q2: #15803d !important;
+    --q3: #7e22ce !important;
+    --shadow-1: none !important;
+    --shadow-2: none !important;
+    --shadow-3: none !important;
+    color-scheme: light !important;
+  }
+  .topbar, .sidebar, .mail-list-pane, .splitter, .thread-toolbar, .composer-dock, .toast-host, .mobile-tabbar, .fab, .reply-box, .thread-actions, .quote-toggle { display: none !important; }
+  .message-head .meta .icon-btn, .message-head .who .to button { display: none !important; }
   .app, .app-body, .main, .mail-layout, .mail-reading-pane, .thread-view, .thread-scroll { display: block !important; height: auto !important; overflow: visible !important; grid-template-columns: 1fr !important; border: 0 !important; }
-  .message { break-inside: avoid; border: 1px solid #ccc; }
+  /*
+   * `break-inside: avoid` on the whole card is what put the first message on
+   * page two: a message longer than a sheet cannot honour it, and Chrome
+   * answers by moving the card to a fresh page and breaking it there anyway --
+   * leaving page one holding nothing but the subject. Only the header is
+   * indivisible now, and it is kept with the body that follows it.
+   */
+  .message { break-inside: auto; border: 1px solid var(--border); }
+  .message-head { break-inside: avoid; break-after: avoid; }
+  /*
+   * "Print" in a message's own menu marks that card and prints it alone;
+   * "Print conversation" in the thread toolbar sets no mark and prints them
+   * all. The subject heading stays either way -- a printed
+   * message with no subject on it is a page nobody can file -- but the
+   * "3 messages" count beside it goes, since only one of them is on the page.
+   */
+  .printing-one .message:not(.print-target) { display: none !important; }
+  .printing-one .thread-subject > .muted { display: none !important; }
+  /*
+   * Printing from the file viewer. The dialog is the document: the mail or the
+   * file listing behind it is not what was asked for, and the chrome of the
+   * dialog itself -- title bar, Print and Download buttons -- is not part of
+   * the file. A PDF never comes through here; it prints itself from its own
+   * iframe (see ui/filepreview.tsx).
+   */
+  /* The dialog is portalled to <body>, so the whole app goes -- hiding `.app`
+     alone left `#root` holding its `height: 100%` and printing a blank first
+     page, the same way `break-inside` did on a message. */
+  .printing-preview #root { display: none !important; }
+  .printing-preview body { height: auto !important; }
+  .printing-preview .dialog-backdrop { position: static !important; display: block !important; padding: 0 !important; background: none !important; backdrop-filter: none !important; animation: none !important; }
+  .printing-preview .dialog { max-width: none !important; max-height: none !important; border: 0 !important; box-shadow: none !important; animation: none !important; background: none !important; }
+  .printing-preview .dialog-head, .printing-preview .dialog-foot { display: none !important; }
+  .printing-preview .dialog-body { padding: 0 !important; overflow: visible !important; }
+  .printing-preview .dialog-body .code { max-height: none !important; overflow: visible !important; border: 0 !important; padding: 0 !important; }
+  .printing-preview .dialog-body .md-body { max-height: none !important; overflow: visible !important; }
+  .printing-preview .md-body pre { overflow: visible !important; white-space: pre-wrap !important; }
+  .printing-preview .dialog-body img { max-height: none !important; }
   .print-only { display: block; }
   body { background: #fff; color: #000; }
 }
@@ -1014,6 +1713,9 @@ button.dp-open:disabled { cursor: default; opacity: .5; }
 .dp-time:hover { background: var(--bg-hover); }
 .dp-time.selected { background: var(--accent); color: var(--accent-fg); }
 @media (max-width: 480px) {
+  /* The spacer would take the whole of the first line and push the overflow
+     onto a line of its own; packed together they wrap as a group instead. */
+  .reply-box .reply-prompt .spacer { display: none; }
   .dp-datetime { flex-wrap: wrap; }
   .dp-datetime .dp-time-field { flex: 1 1 100%; }
   .dp-split { flex-direction: column; }
@@ -1023,6 +1725,10 @@ button.dp-open:disabled { cursor: default; opacity: .5; }
 /* Files: the sidebar tree reuses .nav-item, so only the parts the mail tree has
    no equivalent for are here. A row in the list is a drop target the same way a
    folder in the tree is, and says so the same way. */
+/* Shown only when more than one row is selected: with a single row the row
+   menu already says everything this would. */
+.selection-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin: 0 12px 4px; border-radius: var(--radius); background: var(--accent-soft); color: var(--accent-soft-fg); }
+.selection-bar .grow { font-weight: 600; }
 .files-table tbody tr.drop-target > td { background: var(--accent-soft); }
 .files-table tbody tr.drop-target > td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
 .files-table tbody tr[draggable="true"] { cursor: grab; }
@@ -1037,6 +1743,49 @@ button.dp-open:disabled { cursor: default; opacity: .5; }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
 
 /* The composer's To label doubles as the way into the address books. */
-.composer-field label .link-btn { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
-.composer-field label .link-btn:hover { color: var(--accent); }
-.composer-field label .link-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+/* A button that reads as part of a sentence.
+   Unscoped: it was written for the composer's To/Cc labels and scoped to them,
+   which left every other caller -- the trusted-domain list in Privacy, and the
+   "Show original" link in the headers dialog -- rendering as default button
+   chrome in the middle of a line. `font` and `color` inherit, so it takes the
+   voice of whatever sentence it sits in. */
+.link-btn { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+.link-btn:hover { color: var(--accent); }
+.link-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+/* The spam filter's own working, in the message details. */
+.spam-summary { display: flex; flex-direction: column; gap: 6px; }
+/* Capped, so a rule with no note does not fling its score to the far side of a
+   wide reading pane. */
+.spam-rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-width: 30rem; }
+.spam-rules li { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: baseline; }
+.spam-weight { font-family: var(--font-mono); font-size: 12px; text-align: right; color: var(--fg-muted); }
+.spam-weight.bad { color: var(--danger); }
+.spam-weight.good { color: var(--success); }
+
+/* The placeholder reference under a template's body. */
+.placeholder-list { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; align-items: baseline; }
+.placeholder-row { display: contents; }
+.placeholder-list code { font-family: var(--font-mono); font-size: 12.5px; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 4px; padding: .1em .4em; white-space: nowrap; }
+
+/* The senders whose remote images load without asking, in Privacy & safety. */
+.trusted-senders { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+
+/* The banner naming a sender from outside the organisation. */
+.remote-banner.external-banner { background: var(--warn-soft); border-color: var(--warn); }
+
+/* The line offering the whole folder once the page is selected. */
+.list-hint.select-all-hint { background: var(--accent-soft); color: var(--accent-soft-fg); }
+/* Light / dark, beside the palette cards. */
+.mode-switch { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.mode-switch button { padding: 6px 14px; background: none; border: 0; color: var(--fg-muted); cursor: pointer; font: inherit; }
+.mode-switch button.active { background: var(--accent-soft); color: var(--accent-soft-fg); }
+.mode-switch button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Dragging an event to another time or day. */
+.ev-block.draggable, .ev-chip.draggable { cursor: grab; touch-action: none; }
+.ev-block.dragging, .ev-chip.dragging { cursor: grabbing; opacity: .75; box-shadow: var(--shadow-2); z-index: 5; }
+.ev-block { position: absolute; }
+.ev-resize { position: absolute; left: 0; right: 0; bottom: 0; height: 8px; cursor: ns-resize; touch-action: none; }
+.ev-resize::after { content: ""; position: absolute; left: 50%; bottom: 2px; width: 18px; height: 2px; margin-left: -9px; border-radius: 2px; background: currentColor; opacity: 0; }
+.ev-block:hover .ev-resize::after { opacity: .5; }

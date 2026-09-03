@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { DEFAULT_SORT, useMail, type ListQuery } from "@/store/mail";
+import { appliesTo, comparatorsFor } from "@/lib/listSort";
+import type { Comparator } from "@/jmap/types";
 import { useSettings } from "@/store/settings";
+import { withBase } from "@/lib/basePath";
 import { useCompose } from "@/store/compose";
 import { buildFilter, describeFilter, parseQuery } from "@/lib/search";
 import { keyboard } from "@/lib/keyboard";
@@ -16,6 +19,8 @@ import { confirmDialog } from "@/ui/dialog";
 import { toast } from "@/ui/toast";
 import { isUnknownMailbox } from "@/lib/mailboxRoute";
 import { scheduledMailboxIdFrom, useScheduled } from "@/store/scheduled";
+import { plural, t as translate, tNode } from "@/lib/i18n";
+import { mailboxDisplayName } from "@/lib/mailboxName";
 
 export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; threadId?: string; search?: boolean }) {
   const [, navigate] = useLocation();
@@ -56,9 +61,23 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
    */
   useEffect(() => {
     if (!isUnknownMailbox({ mailboxId, mailboxes, loaded: mailboxesLoaded, search }) || !inboxId) return;
-    toast.show("That folder no longer exists. Showing your inbox instead.");
+    toast.show(translate("That folder no longer exists. Showing your inbox instead."));
     navigate(`/mail/${inboxId}`, { replace: true });
   }, [search, mailboxId, mailboxesLoaded, mailboxes, inboxId, navigate]);
+
+  /*
+   * Search keeps newest-first whatever the setting says. A result list is
+   * already ordered by the question that was asked, and putting unread at the
+   * top of it answers a different one.
+   */
+  const sortForFolder = useCallback(
+    (mailboxId: Id | null): Comparator[] => {
+      const role = mailboxId ? useMail.getState().mailboxes[mailboxId]?.role : null;
+      if (!appliesTo(settings.listSortScope, role)) return DEFAULT_SORT;
+      return comparatorsFor(settings.listSortPreset, settings.listSortLevels);
+    },
+    [settings.listSortScope, settings.listSortPreset, settings.listSortLevels],
+  );
 
   // Build & run the list query
   const listQuery = useMemo<ListQuery | null>(() => {
@@ -74,7 +93,7 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
     // Scheduled joins Drafts and Sent as a folder of individual messages: they
     // are outgoing, and collapsing them into their threads hides them.
     const isDraftsOrSent = mb?.role === "drafts" || mb?.role === "sent" || mailboxId === scheduledId;
-    return { key: "", filter: { inMailbox: mailboxId }, sort: DEFAULT_SORT, collapseThreads: settings.conversationMode && !isDraftsOrSent, mailboxId };
+    return { key: "", filter: { inMailbox: mailboxId }, sort: sortForFolder(mailboxId), collapseThreads: settings.conversationMode && !isDraftsOrSent, mailboxId };
   }, [search, q, mailboxId, mailboxes, settings.conversationMode, scheduledId]);
 
   useEffect(() => {
@@ -102,6 +121,7 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
   const emails = useMail((s) => s.emails);
   const threads = useMail((s) => s.threads);
   const selected = useMail((s) => s.selected);
+  const selectedAll = useMail((s) => s.selectedAll);
 
   const rowThreadId = useCallback((rowId: Id) => emails[rowId]?.threadId, [emails]);
   const currentRowIndex = useMemo(() => {
@@ -115,7 +135,17 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
 
   /** Email ids affected by an action on rows (selection or focused/open row). */
   const targetIds = useCallback(
-    (rowIds?: Id[]): Id[] => {
+    async (rowIds?: Id[]): Promise<Id[]> => {
+      /*
+       * Everything the query matches, rather than the rows that happen to be
+       * loaded. Resolved from the server here and not expanded below: the
+       * uncollapsed query already returns every message, and the expansion
+       * below walks loaded Email objects, which is exactly what these are not.
+       *
+       * Only when the action came from the selection. An action aimed at one
+       * row -- a right-click, a swipe -- means that row, whatever is ticked.
+       */
+      if (!rowIds && selectedAll) return await useMail.getState().queryAllIds();
       const rows = rowIds ?? (Object.keys(selected).length ? Object.keys(selected) : focusId ? [focusId] : threadId ? ids.filter((id) => rowThreadId(id) === threadId) : []);
       const out = new Set<Id>();
       for (const r of rows) {
@@ -129,7 +159,7 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
       }
       return [...out];
     },
-    [selected, focusId, threadId, ids, rowThreadId, emails, threads, list],
+    [selected, selectedAll, focusId, threadId, ids, rowThreadId, emails, threads, list],
   );
 
   const afterAction = useCallback(
@@ -186,13 +216,13 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
   const actions = useMemo(
     () => ({
       archive: async (rows?: Id[]) => {
-        const t = targetIds(rows);
+        const t = await targetIds(rows);
         if (!t.length) return;
         await useMail.getState().archive(t);
         afterAction(true);
       },
       trash: async (rows?: Id[]) => {
-        const t = targetIds(rows);
+        const t = await targetIds(rows);
         if (!t.length) return;
         const mail = useMail.getState();
         const trashId = mail.roleId("trash");
@@ -205,7 +235,7 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
         afterAction(true);
       },
       spam: async (rows?: Id[]) => {
-        const t = targetIds(rows);
+        const t = await targetIds(rows);
         if (!t.length) return;
         const mail = useMail.getState();
         const junk = mail.roleId("junk");
@@ -214,20 +244,20 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
         afterAction(true);
       },
       read: async (read: boolean, rows?: Id[]) => {
-        const t = targetIds(rows);
+        const t = await targetIds(rows);
         if (t.length) await useMail.getState().markRead(t, read);
         useMail.getState().clearSelection();
       },
       star: async (on: boolean, rows?: Id[]) => {
-        const t = targetIds(rows);
+        const t = await targetIds(rows);
         if (t.length) await useMail.getState().star(t, on);
       },
-      move: (rows?: Id[]) => {
-        const t = targetIds(rows);
+      move: async (rows?: Id[]) => {
+        const t = await targetIds(rows);
         if (t.length) setMovePicker({ ids: t });
       },
-      label: (rows: Id[] | undefined, anchor: { x: number; y: number }) => {
-        const t = targetIds(rows);
+      label: async (rows: Id[] | undefined, anchor: { x: number; y: number }) => {
+        const t = await targetIds(rows);
         if (t.length) setLabelPicker({ ids: t, anchor });
       },
       moveTo: async (ids: Id[], mailboxId: Id) => {
@@ -273,7 +303,7 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
       { keys: "#", description: "Delete", group: "Actions", handler: () => void actions.trash() },
       { keys: "delete", description: "", group: "Actions", handler: () => void actions.trash() },
       { keys: "!", description: "Report spam / not spam", group: "Actions", handler: () => void actions.spam() },
-      { keys: "s", description: "Star / unstar", group: "Actions", handler: () => { const t = targetIds(); const on = !t.every((id) => emails[id]?.keywords.$flagged); void actions.star(on); } },
+      { keys: "s", description: "Star / unstar", group: "Actions", handler: () => { void (async () => { const t = await targetIds(); const on = !t.every((id) => emails[id]?.keywords.$flagged); void actions.star(on); })(); } },
       { keys: "shift+i", description: "Mark as read", group: "Actions", handler: () => void actions.read(true) },
       { keys: "shift+u", description: "Mark as unread", group: "Actions", handler: () => void actions.read(false) },
       { keys: "v", description: "Move to…", group: "Actions", handler: () => actions.move() },
@@ -305,7 +335,7 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
     [emails, mailboxId, mailboxes, openThread, openDraft],
   );
 
-  const title = search ? `Search: ${listQuery?.label ?? q}` : (mailboxId && mailboxes[mailboxId]?.name) || "Mail";
+  const title = search ? translate("Search: {query}", { query: listQuery?.label ?? q }) : (mailboxId && mailboxDisplayName(mailboxes[mailboxId])) || translate("Mail");
   const reading = Boolean(threadId);
   const paneClass = settings.readingPane === "bottom" ? "pane-bottom" : settings.readingPane === "off" ? "pane-off" : "pane-right";
   const showList = !(settings.readingPane === "off" && reading) && !(narrow && reading);
@@ -351,16 +381,16 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
             <ThreadView key={threadId} threadId={threadId} mailboxId={mailboxId ?? null} onBack={() => openThread(null)} actions={actions} onNavigate={(delta) => { const idx = currentRowIndex; const next = ids[idx + delta]; const t = next ? rowThreadId(next) : undefined; if (t) { setFocusId(next!); openThread(t); } }} hasPrev={currentRowIndex > 0} hasNext={currentRowIndex >= 0 && currentRowIndex < ids.length - 1} />
           ) : (
             <div className="no-thread">
-              <img src="/img/logo.png" alt="" />
-              <div>{list?.total ? `${list.total} conversation${list.total === 1 ? "" : "s"}` : "No conversation selected"}</div>
-              <div className="hint">Select a conversation to read it here · Press <kbd className="kbd">?</kbd> for shortcuts</div>
+              <img src={withBase("/img/logo.png")} alt="" />
+              <div>{list?.total ? plural(list.total, { one: "{n} conversation", other: "{n} conversations" }) : translate("No conversation selected")}</div>
+              <div className="hint">{tNode("Select a conversation to read it here · Press {key} for shortcuts", { key: <kbd className="kbd">?</kbd> })}</div>
             </div>
           )}
         </div>
       )}
       {movePicker && (
         <MailboxPicker
-          title={`Move ${movePicker.ids.length} message${movePicker.ids.length === 1 ? "" : "s"} to…`}
+          title={plural(movePicker.ids.length, { one: "Move {n} message to…", other: "Move {n} messages to…" })}
           onClose={() => setMovePicker(null)}
           onPick={(mbId) => {
             setMovePicker(null);
@@ -373,7 +403,7 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
           ids={labelPicker.ids}
           anchor={labelPicker.anchor}
           onClose={() => setLabelPicker(null)}
-          onApplied={() => toast.show("Labels updated")}
+          onApplied={() => toast.show(translate("Labels updated"))}
         />
       )}
     </div>

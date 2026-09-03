@@ -3,7 +3,22 @@
    are never cached), and Web Push, which is the only part of ihasmail that runs
    when no tab is open. */
 const VERSION = "ihasmail-v2";
-const SHELL = ["/", "/manifest.webmanifest", "/img/logo.png", "/img/icon-192.png", "/favicon.ico"];
+
+/*
+ * The mount, worked out rather than configured.
+ *
+ * This file is copied to the build verbatim -- Vite's `base` never touches
+ * public/ -- so there is nothing to substitute BASE_PATH into. It does not
+ * need one: the worker is served from the mount, so its own address says
+ * where that is. `/mail/sw.js` gives `/mail`, `/sw.js` gives `""`, which is
+ * the same canonical form the rest of the app uses.
+ *
+ * Deriving it here also means the worker cannot disagree with the page that
+ * registered it, which a second copy of the value in a build-time constant
+ * eventually would.
+ */
+const BASE = new URL("./", self.location).pathname.replace(/\/$/, "");
+const SHELL = [`${BASE}/`, `${BASE}/manifest.webmanifest`, `${BASE}/img/logo.png`, `${BASE}/img/icon-192.png`, `${BASE}/favicon.ico`];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -20,10 +35,10 @@ self.addEventListener("fetch", (event) => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith("/api/")) return;
+  if (url.pathname.startsWith(`${BASE}/api/`)) return;
 
   // Hashed build assets: cache-first.
-  if (url.pathname.startsWith("/assets/")) {
+  if (url.pathname.startsWith(`${BASE}/assets/`)) {
     event.respondWith(
       caches.match(req).then((hit) => hit || fetch(req).then((res) => {
         const copy = res.clone();
@@ -36,7 +51,7 @@ self.addEventListener("fetch", (event) => {
 
   // Navigations & everything else: network-first, fall back to cached shell.
   if (req.mode === "navigate") {
-    event.respondWith(fetch(req).catch(() => caches.match("/")));
+    event.respondWith(fetch(req).catch(() => caches.match(`${BASE}/`)));
     return;
   }
   event.respondWith(fetch(req).catch(() => caches.match(req)));
@@ -59,7 +74,18 @@ self.addEventListener("fetch", (event) => {
  * credentials), so it is stashed for a tab to collect and confirm.
  */
 
-const VERIFY_KEY = "ihasmail-push-verification";
+/*
+ * Absolute, and anchored to the mount rather than to whatever page happens to
+ * be open.
+ *
+ * A relative key is resolved against the URL of whoever is asking: the worker
+ * lives at `<base>/sw.js`, so it stored this under `<base>/…`, while a tab at
+ * `/mail/inbox/abc` looked for it under `/mail/inbox/…`. The two only ever
+ * agreed when the open page was the root, so a verification code that arrived
+ * with no tab open was written where the next tab would not look -- and the
+ * subscription stayed silent, which is the same thing push failing looks like.
+ */
+const VERIFY_KEY = `${BASE}/ihasmail-push-verification`;
 
 function textOf(email) {
   const from = email?.from?.[0];
@@ -98,7 +124,7 @@ self.addEventListener("push", (event) => {
       // A StateChange, or a payload too large to carry the message. Say
       // something true rather than inventing a sender.
       await self.registration.showNotification("New mail", {
-        icon: "/img/icon-192.png", badge: "/img/favicon-64.png", tag: "ihasmail-mail", data: { url: "/mail" },
+        icon: `${BASE}/img/icon-192.png`, badge: `${BASE}/img/favicon-64.png`, tag: "ihasmail-mail", data: { url: `${BASE}/mail` },
       });
       return;
     }
@@ -108,10 +134,10 @@ self.addEventListener("push", (event) => {
       const { title, body, preview } = textOf(email);
       await self.registration.showNotification(title, {
         body: preview ? `${body}\n${preview}` : body,
-        icon: "/img/icon-192.png",
-        badge: "/img/favicon-64.png",
+        icon: `${BASE}/img/icon-192.png`,
+        badge: `${BASE}/img/favicon-64.png`,
         tag: `ihasmail-${email.id || body}`,
-        data: { url: email.id ? `/mail/inbox/${email.id}` : "/mail" },
+        data: { url: email.id ? `${BASE}/mail/inbox/${email.id}` : `${BASE}/mail` },
       });
     }
   })());
@@ -119,12 +145,16 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = event.notification.data?.url || "/mail";
+  const url = event.notification.data?.url || `${BASE}/mail`;
   event.waitUntil((async () => {
     const clients = await self.clients.matchAll({ includeUncontrolled: true, type: "window" });
-    // Reuse a tab if one is open rather than piling up windows.
+    // Reuse a tab if one is open rather than piling up windows. Same origin is
+    // not enough under a prefix: `includeUncontrolled` widens the match to the
+    // whole origin, so on a host that also serves something else this would
+    // navigate a stranger's tab to our inbox.
     for (const c of clients) {
-      if (new URL(c.url).origin === self.location.origin) {
+      const at = new URL(c.url);
+      if (at.origin === self.location.origin && (at.pathname === BASE || at.pathname.startsWith(`${BASE}/`))) {
         await c.focus();
         if ("navigate" in c) await c.navigate(url).catch(() => {});
         return;

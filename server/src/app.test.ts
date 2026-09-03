@@ -88,3 +88,59 @@ test("a Sieve script larger than a compressing hop's threshold survives the prox
     origin.close();
   }
 });
+
+test("only a PDF blob may be framed, and only by us", async () => {
+  /*
+   * The PDF preview is an iframe, and the blanket X-Frame-Options: DENY on
+   * every response blocked it -- the dialog showed Chrome's "refused to
+   * connect" where the file should have been. The middleware now leaves a
+   * header a route has already set, so this pins both halves: the exception
+   * exists, and it did not become the rule.
+   */
+  const app = createApp();
+  const health = await app.request("/api/health");
+  assert.equal(health.headers.get("x-frame-options"), "DENY");
+
+  const { securityHeadersFor } = await import("./app.js");
+  assert.equal(securityHeadersFor("application/pdf", true), "SAMEORIGIN");
+  assert.equal(securityHeadersFor("application/pdf", false), "DENY");
+  assert.equal(securityHeadersFor("image/png", true), "DENY");
+  assert.equal(securityHeadersFor("text/html", true), "DENY");
+});
+
+/*
+ * #239: retrying through an outage must not lock somebody out of the recovery.
+ *
+ * STALWART_URL at the top of this file is 127.0.0.1:1 — nothing listens there,
+ * so every sign-in here is the outage case. Before the fix, the eleventh of
+ * these came back 429 and stayed 429 for fifteen minutes, outliving whatever
+ * had actually been wrong.
+ */
+test("an unreachable upstream does not spend login attempts", async () => {
+  const app = createApp();
+  const login = () =>
+    app.request("/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-requested-with": "ihasmail" },
+      body: JSON.stringify({ username: "someone@example.com", password: "hunter2" }),
+    });
+
+  // Comfortably past LOGIN_RATE_LIMIT, which defaults to 10.
+  for (let i = 0; i < 25; i++) {
+    const res = await login();
+    assert.notEqual(res.status, 429, `attempt ${i + 1} was rate limited`);
+    assert.ok(res.status === 502 || res.status === 504, `attempt ${i + 1} said ${res.status}`);
+  }
+});
+
+test("an unreachable upstream says it is not the password", async () => {
+  const app = createApp();
+  const res = await app.request("/api/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-requested-with": "ihasmail" },
+    body: JSON.stringify({ username: "someone-else@example.com", password: "hunter2" }),
+  });
+  const body = (await res.json()) as { error: string; message: string };
+  assert.notEqual(body.error, "invalid_credentials");
+  assert.match(body.message, /not a problem with your password/i);
+});

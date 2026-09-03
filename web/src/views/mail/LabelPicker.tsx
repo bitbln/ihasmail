@@ -5,6 +5,7 @@ import { useMail } from "@/store/mail";
 import { Popover } from "@/ui/popover";
 import type { Id } from "@/jmap/types";
 import { CALENDAR_COLORS } from "@/ui/misc";
+import { t } from "@/lib/i18n";
 
 /** Labels are IMAP keywords on the messages; their names/colors live in settings. */
 export function LabelPicker({ ids, anchor, onClose, onApplied }: { ids: Id[]; anchor: { x: number; y: number }; onClose: () => void; onApplied?: () => void }) {
@@ -33,12 +34,12 @@ export function LabelPicker({ ids, anchor, onClose, onApplied }: { ids: Id[]; an
 
   return (
     <Popover anchor={{ x: anchor.x, y: anchor.y, w: 0, h: 0 }} onClose={onClose} width={260} closeOnClick={false}>
-      <div className="menu-title">Label as</div>
+      <div className="menu-title">{t("Label as")}</div>
       <div className="menu-search">
         <input
           className="input sm"
           autoFocus
-          placeholder={labels.length ? "Search or create label" : "New label name"}
+          placeholder={labels.length ? t("Search or create label") : t("New label name")}
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => {
@@ -74,10 +75,10 @@ export function LabelPicker({ ids, anchor, onClose, onApplied }: { ids: Id[]; an
       {q.trim() && !labels.some((l) => l.name.toLowerCase() === q.trim().toLowerCase()) && (
         <button className="menu-item" onClick={create}>
           <Plus size={16} />
-          <span>Create “{q.trim()}”</span>
+          <span>{t("Create “{name}”", { name: q.trim() })}</span>
         </button>
       )}
-      {!labels.length && !q && <div className="hint" style={{ padding: "4px 10px 8px" }}>Type a name to create your first label.</div>}
+      {!labels.length && !q && <div className="hint" style={{ padding: "4px 10px 8px" }}>{t("Type a name to create your first label.")}</div>}
     </Popover>
   );
 }

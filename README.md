@@ -3,6 +3,11 @@
 </p>
 
 <p align="center">
+  <strong><a href="https://demo.ihasmail.com">Try the demo</a></strong><br>
+  <sub>A working copy with an invented mailbox behind it — no sign-up, nothing real, nothing kept.</sub>
+</p>
+
+<p align="center">
   <a href="LICENSE"><img alt="Licence: AGPL-3.0-or-later" src="https://img.shields.io/badge/licence-AGPL--3.0--or--later-2dd4bf?style=flat-square"></a>
   <a href="https://stalw.art" target="_blank" rel="noreferrer"><img alt="Requires Stalwart 0.16 or newer; tested against 0.16.20" src="https://img.shields.io/badge/Stalwart-0.16.20-6366f1?style=flat-square"></a>
   <a href="https://docs.ihasmail.org" target="_blank" rel="noreferrer"><img alt="Documentation: docs.ihasmail.org" src="https://img.shields.io/badge/docs-docs.ihasmail.org-0ea5e9?style=flat-square"></a>
@@ -24,6 +29,7 @@ durable belongs to Stalwart; the container is disposable.
 | --- | --- |
 | 🌐 **[ihasmail.org](https://ihasmail.org)** | What it is, what it looks like, the full feature list |
 | 📘 **[docs.ihasmail.org](https://docs.ihasmail.org)** | [Installing](https://docs.ihasmail.org/install/) · [Configuring](https://docs.ihasmail.org/configure/) · [Using it](https://docs.ihasmail.org/using/) · [Shortcuts](https://docs.ihasmail.org/shortcuts/) · [Rebranding](https://docs.ihasmail.org/rebranding/) · [Troubleshooting](https://docs.ihasmail.org/troubleshooting/) |
+| 📋 **[FEATURES.md](FEATURES.md)** | Everything it does, feature by feature, with the capability each one needs |
 | 🧪 **[KNOWN-ISSUES.md](KNOWN-ISSUES.md)** | What was verified live, and where Stalwart departs from a spec |
 | 🛣 **[ROADMAP.md](ROADMAP.md)** | What ihasmail does not do, and why |
 
@@ -44,12 +50,14 @@ More, including the mobile layout, on [ihasmail.org](https://ihasmail.org/#scree
 
 ## What's in it
 
-- **Mail** — three-pane Gmail-style layout, conversation view, virtualised list, labels, undo, Gmail search operators and keyboard shortcuts, Sieve rules from a message's context menu, sanitised HTML with remote images blocked, read receipts, invitations and RSVP, multi-composer rich-text editing with signatures, scheduled send and undo send
+- **Mail** — three-pane Gmail-style layout, conversation view, virtualised list, labels, undo, Gmail search operators and keyboard shortcuts, Sieve rules from a message's context menu, sanitised HTML with remote images blocked, read receipts, invitations and RSVP, an event made from a message with its guests already in it, multi-composer rich-text editing with signatures, scheduled send and undo send
 - **Calendar** — JMAP Calendars / JSCalendar: month/week/day/agenda, recurrence, attendees and free-busy, colour categories
 - **Contacts** — JMAP Contacts / JSContact: address books, groups, full editor, vCard import/export
 - **Files** — JMAP FileNode: browse, upload, download, rename, move, delete
 - **Settings that follow the account**, not the browser — kept in a `settings.json` in the account's own JMAP Files, so ihasmail itself stays stateless
 - **Runs read-only** — one optional write path, and with it switched off the container needs no volume and no writable root. `IMMUTABLE=1` is checked at startup rather than trusted, so a half-applied switch refuses to boot instead of failing quietly. See [Running immutably](#running-immutably)
+- **Nine new interface languages** — German, Spanish, French, Dutch, Portuguese (Brazil), Russian, Ukrainian, Simplified Chinese and Japanese, alongside English and separate from the date-and-time locale. Every one is marked **Beta**: they were made by AI and no native speaker has read them yet, which Settings says plainly, with a link for reporting anything wrong
+- **On a phone** — swipe a message to archive or delete it (either direction, your choice), hold one to select it, hold a folder for its menu, pull the list to refresh, swipe back from a conversation
 - **Platform** — installable PWA, Web Push with ihasmail closed, `mailto:` handler, no credentials in the browser, strict CSP, SSRF-safe image proxy
 
 The long version is on [ihasmail.org](https://ihasmail.org/#features); how to
@@ -108,6 +116,163 @@ That sign-out is the standing cost of this mode today, since sessions have
 nowhere to live across a restart. Removing it means moving the session upstream
 into a token Stalwart itself issues and can revoke, which is what the OAuth work
 in [ROADMAP.md](ROADMAP.md) is for.
+
+### Several Stalwart servers
+
+One ihasmail can front more than one Stalwart, choosing by the domain somebody
+signs in with. **`STALWART_URL` stays required and stays the default**, so an
+installation that sets nothing else behaves exactly as it always has.
+
+```bash
+-e STALWART_SERVERS_FILE=/etc/ihasmail/servers.json \
+-v /srv/ihasmail/servers.json:/etc/ihasmail/servers.json:ro
+```
+
+```json
+{
+  "example.com": "https://mail.example.com",
+  "customer-b.test": "https://jmap.customer-b.test"
+}
+```
+
+[`stalwart-servers.example.json`](stalwart-servers.example.json) is that file
+with the rules written in it.
+
+A domain nobody listed — and a bare username, which Stalwart accepts and which
+has no domain at all — goes to `STALWART_URL`. **A listed domain never falls
+back.** If its server is unreachable that sign-in fails rather than retrying
+against the default, because falling back would authenticate somebody against a
+server their domain was deliberately routed away from; if the same account name
+existed there they would land in another tenant's mailbox.
+
+Read once at startup, so editing it means restarting the container. Malformed
+JSON, a duplicate domain once lower-cased, or a value that is not an `http(s)`
+URL stops the server rather than failing quietly at somebody's sign-in. The
+servers themselves are not contacted at boot — a mapping is a routing table,
+not a health check, and one customer's outage must not stop ihasmail starting
+for everybody else.
+
+This is one server per *person*, chosen at sign-in. Several servers at once for
+one person, with unified or cross-account views, is not supported: JMAP account
+ids are only unique within a server, so it would mean namespacing ids through
+the proxy. Reading somebody else's mail, calendars or files on the *same* server
+already works through JMAP sharing.
+
+### Settings the installation decides
+
+A deployment can seed and lock user settings, which is what a school wanting
+"warn about outside senders" on for three thousand pupils needs — asking three
+thousand pupils is not a plan.
+
+```bash
+-e SETTINGS_DEFAULTS='{"externalSenderBanner":true}' \
+-e SETTINGS_ENFORCED='{"externalRecipientConfirm":true}'
+```
+
+Three powers, and the differences between them matter:
+
+| Section | Applies to | Reader can change it |
+| --- | --- | --- |
+| `defaults` | accounts that have never had settings of their own | yes, at any time |
+| `enforced` | everyone, on every load | no — the control goes dead |
+| `changes` | everyone, **once each**, including existing accounts | yes, afterwards, and it stays changed |
+
+`changes` is the one that needs explaining. It turns something on for people who
+are *already here* — the reason a plain default is not enough — while still
+leaving them the last word. Each entry carries its own `version`, which every
+account remembers once it has had it, so the change is applied exactly once per
+person and a reader who turns it back off keeps it off. It is a schema migration
+in shape, and that is deliberately whose idea it was ([#207]).
+
+Nothing is configured by default: an installation that sets none of these
+behaves exactly as ihasmail always has.
+
+### Passing a policy to Docker
+
+Where a file is easier to manage than JSON quoted in a unit file — and it
+usually is once there are `changes` in it — mount one and name it:
+
+```bash
+docker run -d --name ihasmail \
+  -e STALWART_URL=https://mail.example.org \
+  -e APP_SECRET="$(openssl rand -hex 32)" \
+  -e SETTINGS_POLICY_FILE=/etc/ihasmail/policy.json \
+  -v /srv/ihasmail/policy.json:/etc/ihasmail/policy.json:ro \
+  -p 8080:8080 ghcr.io/coffey-labs/ihasmail:latest
+```
+
+```json
+{
+  "defaults": { "externalSenderBanner": true },
+  "enforced": { "externalRecipientConfirm": true },
+  "changes": [
+    { "version": "20260902084513", "settings": { "externalSenderBanner": true } },
+    { "version": "20261014091500", "settings": { "externalLinkWarning": true } }
+  ]
+}
+```
+
+[`settings-policy.example.json`](settings-policy.example.json) in this repo is
+that file with every section explained in it — copy it and delete what you do
+not want.
+
+Mount it read-only: the server only ever reads it, and `:ro` keeps that true
+under `--read-only` as well.
+
+Or without a file at all, which is what an immutable deployment with no volume
+wants:
+
+```bash
+docker run -d --name ihasmail --read-only --tmpfs /tmp \
+  -e IMMUTABLE=1 -e SESSION_FILE= \
+  -e STALWART_URL=https://mail.example.org \
+  -e APP_SECRET="$(openssl rand -hex 32)" \
+  -e SETTINGS_DEFAULTS='{"externalSenderBanner":true}' \
+  -e SETTINGS_ENFORCED='{"externalRecipientConfirm":true}' \
+  -e SETTINGS_CHANGES='[{"version":"20260902084513","settings":{"externalSenderBanner":true}}]' \
+  -p 8080:8080 ghcr.io/coffey-labs/ihasmail:latest
+```
+
+In `docker-compose.yml`:
+
+```yaml
+services:
+  ihasmail:
+    image: ghcr.io/coffey-labs/ihasmail:latest
+    environment:
+      SETTINGS_POLICY_FILE: /etc/ihasmail/policy.json
+    volumes:
+      - ./policy.json:/etc/ihasmail/policy.json:ro
+```
+
+A policy is read once at startup, so **editing it means restarting the
+container**. There is no reload signal, deliberately: an installation-wide
+setting changing under a running instance would be harder to reason about than
+one that changes when you say so.
+
+### Writing a policy
+
+Both sections take the same names and values a settings export uses, so
+`Settings → General → Export` on one account you have configured by hand is the
+quickest way to write one — copy the keys you care about out of the file.
+
+Three checks worth knowing about, because they fail loudly rather than quietly:
+
+- **Malformed JSON stops the server at startup.** A policy that silently did not
+  apply is indistinguishable from the feature not working.
+- **Every change needs a unique `version`.** Two changes sharing one, or a change
+  with no `version` or no `settings`, is a startup error.
+- **Keys this build does not have are dropped**, the same rule an imported
+  settings file gets. A `changes` entry whose keys are *all* unknown is dropped
+  whole rather than recorded as applied, so it still runs on an ihasmail that
+  does have the setting.
+
+Enforcement is applied in the settings store rather than only on the controls,
+so an imported settings file, a settings file synced from a device that predates
+the policy, and "reset to defaults" cannot get around it. Reset returns to your
+defaults, not to ihasmail's.
+
+[#207]: https://github.com/Coffey-Labs/ihasmail/issues/207
 
 ## Architecture
 

@@ -1,8 +1,11 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
-import { BookOpen, Calendar, ChevronsUpDown, FolderOpen, Globe, HelpCircle, LogOut, Mail, Menu as MenuIcon, Moon, PenSquare, Plus, RefreshCw, Settings, Sun, Upload, Users } from "lucide-react";
+import { BookOpen, Calendar, ChevronsUpDown, FolderOpen, Globe, HelpCircle, LogOut, Mail, Menu as MenuIcon, Moon, PenSquare, Plus, RefreshCw, Settings, Sun, Upload, Users, X } from "lucide-react";
 import { useSession } from "@/store/session";
-import { toggleTarget, useEffectiveTheme, useSettings } from "@/store/settings";
+import { withBase } from "@/lib/basePath";
+import { DEFAULT_APP_NAME } from "@/lib/brand";
+import { useEffectiveTheme, useSettings } from "@/store/settings";
+import { toggleTarget } from "@/lib/palette";
 import { useMail } from "@/store/mail";
 import { draftFromMailto, useCompose } from "@/store/compose";
 import { Avatar, useIsMobile } from "@/ui/misc";
@@ -13,7 +16,10 @@ import { FilesTree } from "./files/FilesTree";
 import { ContactsSidebar } from "./contacts/ContactsSidebar";
 import { CalendarSidebar } from "./calendar/CalendarSidebar";
 import { ShortcutsDialog, useGlobalShortcuts } from "./Shortcuts";
+import { MailboxPicker } from "./mail/MailboxPicker";
 import { formatSize } from "@/lib/format";
+import { TranslateBoundary } from "@/ui/TranslateBoundary";
+import { t } from "@/lib/i18n";
 
 const PUSH_LABEL = {
   connected: "Live updates connected",
@@ -32,11 +38,26 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pushState = useSession((s) => s.pushState);
   const session = useSession((s) => s.session);
   const logout = useSession((s) => s.logout);
+  const appName = useSession((s) => s.session?.ihasmail?.appName) || DEFAULT_APP_NAME;
   const acctMenu = useMenu();
+  /*
+   * "Go to folder" (#233), hosted here rather than in the mail view because
+   * the `g` shortcuts are global: pressing it from the calendar should still
+   * take you to a folder, and the mail view is not mounted to hear about it.
+   */
+  const [goFolder, setGoFolder] = useState(false);
   const section = location.split("/")[1] || "mail";
 
-  useGlobalShortcuts({ onHelp: () => setHelpOpen(true) });
+  useGlobalShortcuts({ onHelp: () => setHelpOpen(true), onGoToFolder: () => setGoFolder(true) });
   useEffect(() => setDrawer(false), [location]);
+
+  // Escape closes it too, for the tablet with a keyboard attached.
+  useEffect(() => {
+    if (!drawer) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setDrawer(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawer]);
 
   // Deep link: /mail?compose=new (PWA shortcut) / mailto handler
   useEffect(() => {
@@ -66,28 +87,32 @@ export function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="app">
       <header className="topbar">
-        <button className="icon-btn" aria-label="Menu" onClick={() => (isMobile ? setDrawer(true) : update({ sidebarCollapsed: !collapsed }))}>
+        <button className="icon-btn" aria-label={t("Menu")} onClick={() => (isMobile ? setDrawer((d) => !d) : update({ sidebarCollapsed: !collapsed }))}>
           <MenuIcon size={22} />
         </button>
         <Link href="/mail" className="brand">
-          <img src="/img/logo.png" alt="" />
-          <span className="brand-name">
-            ihasmail
+          <img src={withBase("/img/logo.png")} alt="" />
+          {/* A product name, not a word: translated it is a different product.
+              Read from the session rather than written here, so a deployment
+              that set APP_NAME is called what it calls itself -- the document
+              title has taken it from there all along. */}
+          <span className="brand-name notranslate" translate="no">
+            {appName}
           </span>
         </Link>
         <SearchBar />
         <div className="topbar-actions">
-          <span className="push-status hide-mobile" role="img" aria-label={PUSH_LABEL[pushState]} title={PUSH_LABEL[pushState]}>
+          <span className="push-status hide-mobile" role="img" aria-label={t(PUSH_LABEL[pushState])} title={t(PUSH_LABEL[pushState])}>
             <span className={`push-dot ${pushState}`} />
           </span>
-          <button className="icon-btn hide-mobile" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" onClick={() => setHelpOpen(true)}>
+          <button className="icon-btn hide-mobile" aria-label={t("Keyboard shortcuts")} title={t("Keyboard shortcuts (?)")} onClick={() => setHelpOpen(true)}>
             <HelpCircle size={21} />
           </button>
           <ThemeToggle />
-          <Link href="/settings" className={`icon-btn ${section === "settings" ? "active" : ""}`} aria-label="Settings" title="Settings">
+          <Link href="/settings" className={`icon-btn ${section === "settings" ? "active" : ""}`} aria-label={t("Settings")} title={t("Settings")}>
             <Settings size={21} />
           </Link>
-          <button className="icon-btn" style={{ width: "auto", padding: "0 2px", borderRadius: 999 }} onClick={acctMenu.open} aria-label="Account">
+          <button className="icon-btn" style={{ width: "auto", padding: "0 2px", borderRadius: 999 }} onClick={acctMenu.open} aria-label={t("Account")}>
             <Avatar who={{ name: session?.username, email: session?.username }} size="sm" />
           </button>
           <Popover anchor={acctMenu.anchor} onClose={acctMenu.close} align="end" width={280}>
@@ -97,18 +122,18 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <div style={{ fontWeight: 600 }} className="truncate">
                   {session?.username}
                 </div>
-                <div className="hint truncate">{session?.ihasmail?.loginName}</div>
+                <div className="hint truncate notranslate" translate="no">{session?.ihasmail?.loginName}</div>
               </div>
             </div>
             <MenuSep />
-            <MenuItem icon={<BookOpen size={16} />} label="Documentation" href="https://docs.ihasmail.org" external />
+            <MenuItem icon={<BookOpen size={16} />} label={t("Documentation")} href="https://docs.ihasmail.org" external />
             {/* The project site. It is linked from the login screen footer, which
                 is a page a signed-in user never sees again -- so from inside the
                 app there was no way back to it. */}
-            <MenuItem icon={<Globe size={16} />} label="About ihasmail" href="https://ihasmail.org" external />
-            <MenuItem icon={<Settings size={16} />} label="Settings" onClick={() => navigate("/settings")} />
-            <MenuItem icon={<RefreshCw size={16} />} label="Refresh" onClick={() => window.location.reload()} />
-            <MenuItem icon={<LogOut size={16} />} label="Sign out" onClick={() => void logout()} />
+            <MenuItem icon={<Globe size={16} />} label={t("About ihasmail")} href="https://ihasmail.org" external />
+            <MenuItem icon={<Settings size={16} />} label={t("Settings")} onClick={() => navigate("/settings")} />
+            <MenuItem icon={<RefreshCw size={16} />} label={t("Refresh")} onClick={() => window.location.reload()} />
+            <MenuItem icon={<LogOut size={16} />} label={t("Sign out")} onClick={() => void logout()} />
           </Popover>
         </div>
       </header>
@@ -116,6 +141,26 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className={`app-body ${collapsed && !isMobile ? "collapsed" : ""}`}>
         <div className={`drawer-backdrop ${drawer ? "open" : ""}`} onClick={() => setDrawer(false)} />
         <aside className={`sidebar ${drawer ? "open" : ""}`}>
+          {/*
+            The way back out.
+
+            The drawer covers the top bar -- it has to, being taller than it --
+            so the hamburger that opened it is underneath, and pressing the
+            same place again did nothing. That left the dimmed strip beside the
+            drawer as the only exit, which is not a thing anyone is told about.
+            Putting a close where the hamburger was means the second press
+            lands on the control that undoes the first, which is where the hand
+            is already going. It cannot be done by raising the top bar over the
+            drawer instead: it would then also sit over a full-screen composer,
+            which is stacked lower still.
+          */}
+          {isMobile && (
+            <div className="drawer-head">
+              <button className="icon-btn" aria-label={t("Close menu")} onClick={() => setDrawer(false)}>
+                <X size={22} />
+              </button>
+            </div>
+          )}
           {/* Whatever this pane is for. Files offered Compose, which wrote mail
               from the file manager and was the one thing nobody wanted there. */}
           <button
@@ -128,54 +173,74 @@ export function AppShell({ children }: { children: ReactNode }) {
             }}
           >
             {section === "files" ? <Upload size={22} /> : section === "calendar" || section === "contacts" ? <Plus size={22} /> : <PenSquare size={22} />}
-            <span>{section === "calendar" ? "New event" : section === "contacts" ? "New contact" : section === "files" ? "Upload" : "Compose"}</span>
+            <span>{section === "calendar" ? t("New event") : section === "contacts" ? t("New contact") : section === "files" ? t("Upload") : t("Compose")}</span>
           </button>
           <div className="sidebar-scroll">
             {(section === "mail" || section === "search") && <MailboxTree />}
             {section === "calendar" && <CalendarSidebar />}
             {section === "contacts" && <ContactsSidebar />}
             {section === "files" && <FilesTree />}
-            {section === "settings" && <div className="nav-section"><span>Settings</span></div>}
+            {section === "settings" && <div className="nav-section"><span>{t("Settings")}</span></div>}
           </div>
           {(section === "mail" || section === "search") && <QuotaBar />}
-          <nav className="module-bar" aria-label="Go to">
-            <ModuleLink href="/mail" icon={<Mail size={20} />} label="Mail" active={section === "mail" || section === "search"} />
-            <ModuleLink href="/calendar" icon={<Calendar size={20} />} label="Calendar" active={section === "calendar"} />
-            <ModuleLink href="/contacts" icon={<Users size={20} />} label="Contacts" active={section === "contacts"} />
-            <ModuleLink href="/files" icon={<FolderOpen size={20} />} label="Files" active={section === "files"} />
+          <nav className="module-bar" aria-label={t("Go to")}>
+            <ModuleLink href="/mail" icon={<Mail size={20} />} label={t("Mail")} active={section === "mail" || section === "search"} />
+            <ModuleLink href="/calendar" icon={<Calendar size={20} />} label={t("Calendar")} active={section === "calendar"} />
+            <ModuleLink href="/contacts" icon={<Users size={20} />} label={t("Contacts")} active={section === "contacts"} />
+            <ModuleLink href="/files" icon={<FolderOpen size={20} />} label={t("Files")} active={section === "files"} />
           </nav>
         </aside>
-        <main className="main">{children}</main>
+        {/*
+          Scoped to the content, not the shell. If Chrome's translator breaks a
+          message list, the top bar, the folder tree and any open composer are
+          outside this and carry on -- so recovery is a pane blinking rather
+          than the app disappearing.
+        */}
+        <main className="main"><TranslateBoundary>{children}</TranslateBoundary></main>
       </div>
 
       {isMobile && (
         <>
           {(section === "mail" || section === "search") && !location.split("/")[3] && (
-            <button className="fab" aria-label="Compose" onClick={() => openCompose()}>
+            <button className="fab" aria-label={t("Compose")} onClick={() => openCompose()}>
               <PenSquare size={24} />
             </button>
           )}
-          <nav className="mobile-tabbar" aria-label="Sections">
+          <nav className="mobile-tabbar" aria-label={t("Sections")}>
             <Link href="/mail" className={section === "mail" || section === "search" ? "active" : ""}>
               <Mail size={22} />
-              Mail
+              
+              {t("Mail")}
             </Link>
             <Link href="/calendar" className={section === "calendar" ? "active" : ""}>
               <Calendar size={22} />
-              Calendar
+              
+              {t("Calendar")}
             </Link>
             <Link href="/contacts" className={section === "contacts" ? "active" : ""}>
               <Users size={22} />
-              Contacts
+              
+              {t("Contacts")}
             </Link>
             <Link href="/files" className={section === "files" ? "active" : ""}>
               <FolderOpen size={22} />
-              Files
+              
+              {t("Files")}
             </Link>
           </nav>
         </>
       )}
       <ShortcutsDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
+      {goFolder && (
+        <MailboxPicker
+          title={t("Go to folder…")}
+          /* Read, not write: a shared folder you may read but not file into is
+             still somewhere worth going. */
+          need="mayReadItems"
+          onClose={() => setGoFolder(false)}
+          onPick={(id) => { setGoFolder(false); navigate(`/mail/${id}`); }}
+        />
+      )}
     </div>
   );
 }
@@ -199,7 +264,7 @@ function QuotaBar() {
     <div className="quota" title={`${formatSize(q.used)} of ${formatSize(q.hardLimit)} used`}>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span>
-          {formatSize(q.used)} of {formatSize(q.hardLimit)}
+          {t("{used} of {total}", { used: formatSize(q.used), total: formatSize(q.hardLimit) })}
         </span>
         <ChevronsUpDown size={12} style={{ opacity: 0 }} />
       </div>
@@ -225,18 +290,20 @@ function QuotaBar() {
  */
 function ThemeToggle() {
   const effective = useEffectiveTheme();
-  const lastDarkTheme = useSettings((s) => s.settings.lastDarkTheme);
+  const settings = useSettings((s) => s.settings);
   const update = useSettings((s) => s.update);
-  const next = toggleTarget(effective, lastDarkTheme);
-  // The label names where you are going, and going back is not always "dark"
-  // any more -- it is whichever theme you were on before flipping to light.
-  const label = next === "light" ? "light mode" : next === "system" ? "your system theme" : next === "ihasmail" ? "the ihasmail theme" : "dark mode";
+  const prefersDark = Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+  const next = toggleTarget({ palette: settings.palette, mode: settings.mode }, prefersDark);
+  // Name where it is going, and by the palette when the palette is changing --
+  // going back to ihasmail's own colours is not the same as "dark mode".
+  // The palette never changes now, so the label is only ever the side.
+  const label = next.mode === "light" ? t("light mode") : t("dark mode");
   return (
     <button
       className="icon-btn"
-      aria-label={`Switch to ${label}`}
-      title={`Switch to ${label}`}
-      onClick={() => update({ theme: next })}
+      aria-label={t("Switch to {theme}", { theme: label })}
+      title={t("Switch to {theme}", { theme: label })}
+      onClick={() => update(next)}
     >
       {effective === "dark" ? <Sun size={21} /> : <Moon size={21} />}
     </button>

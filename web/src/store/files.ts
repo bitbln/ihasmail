@@ -5,6 +5,7 @@ import { foldersNeeded, type PlannedUpload } from "@/lib/dropUpload";
 import { isAppFolder } from "@/lib/appFolder";
 import type { FileNode, GetResponse, Id, QueryResponse, SetResponse } from "@/jmap/types";
 import { useSession } from "./session";
+import { t as translate } from "@/lib/i18n";
 
 interface SharedAccount {
   id: Id;
@@ -47,7 +48,7 @@ interface FilesState {
    * It cannot be read from the drag itself: `dataTransfer.getData` is blocked
    * during dragover, which is exactly when the answer is needed.
    */
-  draggingId: Id | null;
+  draggingIds: Id[];
 
   init(): Promise<void>;
   /** Browse an account: the reader's own, or one shared with them. */
@@ -56,10 +57,18 @@ interface FilesState {
   mkdir(parentId: Id | null, name: string): Promise<Id>;
   upload(parentId: Id | null, files: File[]): Promise<void>;
   rename(id: Id, name: string): Promise<void>;
+  /**
+   * Write text back over a file. `seenBlobId` is what the editor started from:
+   * if the node has moved on since, somebody else saved and this throws rather
+   * than quietly winning.
+   */
+  saveText(id: Id, text: string, seenBlobId: Id | null): Promise<Id>;
   move(id: Id, parentId: Id | null): Promise<void>;
+  /** Move several at once, in one round trip -- see the note on the implementation. */
+  moveMany(ids: Id[], parentId: Id | null): Promise<void>;
   destroy(ids: Id[]): Promise<void>;
   refresh(ids: Id[]): Promise<void>;
-  setDragging(id: Id | null): void;
+  setDragging(ids: Id[]): void;
   /** Every directory in the account, for the tree in the sidebar. */
   loadTree(): Promise<void>;
   /** Upload a planned drop, creating the folders it needs as it goes. */
@@ -108,7 +117,7 @@ export function withoutAppFolder(nodes: FileNode[]): FileNode[] {
  * accounts.
  */
 export function emptyForAccount(accountId: Id | null) {
-  return { accountId, nodes: {}, children: {}, dirIds: [], treeLoaded: false, draggingId: null, error: null };
+  return { accountId, nodes: {}, children: {}, dirIds: [], treeLoaded: false, draggingIds: [], error: null };
 }
 
 export const useFiles = create<FilesState>((set, get) => ({
@@ -123,7 +132,7 @@ export const useFiles = create<FilesState>((set, get) => ({
   uploads: [],
   dirIds: [],
   treeLoaded: false,
-  draggingId: null,
+  draggingIds: [],
 
   async init() {
     const session = useSession.getState();
@@ -269,8 +278,8 @@ export const useFiles = create<FilesState>((set, get) => ({
   /* Re-read named nodes in place. Sharing changes one property of one node and
      nothing about which folder it sits in, so reloading the level around it
      would be a bigger round trip to land in the same place. */
-  setDragging(id) {
-    set({ draggingId: id });
+  setDragging(ids) {
+    set({ draggingIds: ids });
   },
 
   async refresh(ids) {
@@ -307,6 +316,35 @@ export const useFiles = create<FilesState>((set, get) => ({
     void get().loadTree();
   },
 
+  async saveText(id, text, seenBlobId) {
+    const accountId = get().accountId!;
+    /*
+     * Look before writing.
+     *
+     * `ifInState` is the obvious tool and the wrong one here: it is the state
+     * of every FileNode in the account, so an unrelated upload in another
+     * folder would fail this save, and a reader who is told "someone changed
+     * it" when nobody did learns to click through the warning. The node's own
+     * blobId is the thing that actually answers the question.
+     */
+    const fresh = await client.call<GetResponse<FileNode>>("FileNode/get", { accountId, ids: [id], properties: fileNodeProps() });
+    const now = fresh.list[0];
+    if (!now) throw new Error(translate("That file is no longer there."));
+    if (now.blobId !== seenBlobId) throw new Error(translate("Somebody else saved this file while it was open. Copy your changes, close it, and start again."));
+
+    const type = now.type || "text/plain";
+    const blob = new Blob([text], { type });
+    const up = await client.upload(accountId, blob, { type });
+    const res = await client.call<SetResponse<FileNode>>("FileNode/set", {
+      accountId,
+      update: { [id]: { blobId: up.blobId, type, size: blob.size } },
+    });
+    const err = res.notUpdated?.[id];
+    if (err) throw new Error(setErrorMessage(err));
+    await get().refresh([id]);
+    return up.blobId;
+  },
+
   async rename(id, name) {
     const accountId = get().accountId!;
     const res = await client.call<SetResponse>("FileNode/set", { accountId, update: { [id]: { name } } });
@@ -317,12 +355,27 @@ export const useFiles = create<FilesState>((set, get) => ({
   },
 
   async move(id, parentId) {
+    await get().moveMany([id], parentId);
+  },
+
+  /*
+   * One `FileNode/set` for the lot rather than one per file.
+   *
+   * Not only for the round trip: a loop would apply half the moves and then
+   * throw, leaving a selection split across two folders with nothing saying
+   * which half went. One call is one answer, and `notUpdated` names whichever
+   * ones the server refused.
+   */
+  async moveMany(ids, parentId) {
+    if (!ids.length) return;
     const accountId = get().accountId!;
-    const from = get().nodes[id]?.parentId ?? null;
-    const res = await client.call<SetResponse>("FileNode/set", { accountId, update: { [id]: { parentId } } });
-    const err = res.notUpdated?.[id];
-    if (err) throw new Error(setErrorMessage(err));
-    await Promise.all([get().loadChildren(from), get().loadChildren(parentId)]);
+    const from = new Set(ids.map((id) => get().nodes[id]?.parentId ?? null));
+    const update = Object.fromEntries(ids.map((id) => [id, { parentId }]));
+    const res = await client.call<SetResponse>("FileNode/set", { accountId, update });
+    const failed = Object.values(res.notUpdated ?? {})[0];
+    if (failed) throw new Error(setErrorMessage(failed));
+    from.add(parentId);
+    for (const p of from) await get().loadChildren(p);
     void get().loadTree();
   },
 

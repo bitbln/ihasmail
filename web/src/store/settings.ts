@@ -1,8 +1,14 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
-import { loadJson, saveJson } from "@/lib/storage";
-import { queueSettingsPush } from "@/lib/settingsSync";
-import { setDateTimePrefs, type DateFormat, type TimeFormat } from "@/lib/datetime";
+import { hasCachedJson, loadJson, saveJson } from "@/lib/storage";
+import { effectiveMode, legacyTheme, migrateTheme, type Mode, type PaletteId } from "@/lib/palette";
+import type { SortLevel, SortPreset } from "@/lib/listSort";
+import { pendingSettingsKeys, queueSettingsPush } from "@/lib/settingsSync";
+import { policyChanges, policyDefaults, policyEnforced, type PolicyChange } from "@/lib/settingsPolicy";
+import { setDateTimePrefs, setUiLanguageForFormatting, type DateFormat, type TimeFormat } from "@/lib/datetime";
+import type { SwipeAction } from "@/lib/swipe";
+import { resolveUiLanguage } from "@/lib/languages";
+import { loadLanguage } from "@/lib/i18n";
 
 /**
  * "ihasmail" is a dark theme carrying the palette from ihasmail.org. It is a
@@ -16,6 +22,34 @@ export type ImagePolicy = "ask" | "always" | "contacts";
 export type ComposeFormat = "html" | "text";
 export type ReadReceiptPolicy = "ask" | "never";
 
+/** How prominent a label is in the sidebar. */
+export type LabelVisibility = "always" | "unread" | "hidden";
+
+export interface Label {
+  /** The IMAP keyword itself, which is what actually rides on the message. */
+  keyword: string;
+  name: string;
+  color: string;
+  /**
+   * The keyword of the label this one sits under, if any.
+   *
+   * Nesting is display only. The keywords stay flat on the message, which is
+   * what keeps them readable by every other client -- a label moved under
+   * another one does not rewrite anything in the mailbox.
+   */
+  parent?: string;
+  /** Absent means "always", so a settings file written before this parses unchanged. */
+  visibility?: LabelVisibility;
+}
+
+/** A calendar subscribed to by URL, read-only and redrawn on every refresh. */
+export interface IcalSubscription {
+  id: string;
+  url: string;
+  name: string;
+  color: string;
+}
+
 export interface Template {
   id: string;
   name: string;
@@ -24,7 +58,16 @@ export interface Template {
 }
 
 export interface Settings {
+  /**
+   * Kept, and kept correct, for a device still running a build that only knows
+   * this field. It cannot express "Gruvbox", but it can express light or dark,
+   * which is the half that stops an older device showing a theme nobody chose.
+   */
   theme: Theme;
+  /** The colours. */
+  palette: PaletteId;
+  /** Light, dark, or whatever the system says. */
+  mode: Mode;
   accent: string;
   density: Density;
   readingPane: ReadingPane;
@@ -65,12 +108,44 @@ export interface Settings {
    */
   readReceiptPolicy: ReadReceiptPolicy;
   confirmDelete: boolean;
+  /**
+   * What dragging a message row sideways does, on a touchscreen.
+   *
+   * Two settings rather than one "swipe actions" toggle because the pair is
+   * the choice: which hand-side gets the destructive one is personal, and the
+   * usual complaint about swipe gestures is not that they exist but that the
+   * app picked the wrong ones. "none" turns a direction off; turning both off
+   * turns the gesture off.
+   *
+   * They follow the account rather than the device: someone who has decided
+   * that a left swipe deletes has decided it for their phone and their tablet
+   * both, and the setting is meaningless on the desktop that would otherwise
+   * be the odd one out.
+   */
+  swipeRight: SwipeAction;
+  swipeLeft: SwipeAction;
   desktopNotifications: boolean;
   notificationSound: boolean;
   attachmentReminder: boolean;
   weekStart: 0 | 1 | 6;
   /** "" = follow the mail server's locale, then the browser's. */
   locale: string;
+  /**
+   * The language the interface is written in, and what `<html lang>` says.
+   *
+   * Separate from `locale` above, which is a *formatting* choice — what
+   * calendar, clock and numerals to use. They are genuinely different
+   * questions: German dates with an English interface is a real preference,
+   * and so is the reverse. Folding them together would silently rewrite
+   * everybody's date format the first time they picked a language.
+   *
+   * Absent means English, for a new account and for every existing one whose
+   * settings file predates this. The browser's `Accept-Language` is
+   * deliberately not consulted as the stored default: a served locale should
+   * be something the reader chose, not something guessed on their behalf and
+   * then written down as though they had.
+   */
+  uiLanguage: string;
   dateFormat: DateFormat;
   timeFormat: TimeFormat;
   calendarDefaultView: "month" | "week" | "day" | "agenda";
@@ -80,9 +155,30 @@ export interface Settings {
   defaultAlertMinutes: number;
   timeZone: string | null; // null = browser
   labelsSidebar: boolean;
+  /**
+   * Birthdays from the address book, shown as a calendar of their own.
+   * Off by default: it is derived data, and a calendar that fills itself with
+   * dates nobody put there is a surprise rather than a feature.
+   */
+  birthdayCalendar: boolean;
+  /**
+   * Calendars subscribed to by URL. The subscription is the setting; the
+   * events themselves are fetched on demand and never stored, so this follows
+   * the account the way every other preference does and costs nothing to sync.
+   */
+  icalSubscriptions: IcalSubscription[];
+  /** What order the message list is in. See lib/listSort.ts. */
+  listSortPreset: SortPreset;
+  listSortLevels: SortLevel[];
+  /**
+   * Which folders it covers. Inbox-only is the useful default rather than a
+   * timid one: unread-first is what people want where they triage, and
+   * confusing in Sent, where everything is read.
+   */
+  listSortScope: "inbox" | "all";
   fontSize: "small" | "medium" | "large";
   templates: Template[];
-  labels: Array<{ keyword: string; name: string; color: string }>;
+  labels: Label[];
   /**
    * Folder colours, by mailbox id. Local to this browser, like every other
    * colour here: JMAP has nowhere on a Mailbox to keep one.
@@ -91,6 +187,22 @@ export interface Settings {
   sidebarCollapsed: boolean;
   showHiddenFolders: boolean;
   trustedImageSenders: string[];
+  /**
+   * The three warnings, each off until switched on. A client that starts by
+   * interrupting is one people learn to click through, and a warning clicked
+   * through without reading costs the same attention and buys nothing.
+   */
+  externalSenderBanner: boolean;
+  externalRecipientConfirm: boolean;
+  /**
+   * Domains that count as inside, *in addition to* the account's own identity
+   * domains, which are always internal and are not configuration.
+   */
+  internalDomains: string[];
+  /** People on a message before sending asks. 0 is off. */
+  replyAllThreshold: number;
+  externalLinkWarning: boolean;
+  trustedLinkDomains: string[];
   archiveOnReply: boolean;
   autoAdvance: "newer" | "older" | "list";
   spellcheck: boolean;
@@ -117,13 +229,23 @@ export interface Settings {
    */
   hiddenIdentities: string[];
   /**
-   * The theme the top-bar toggle goes back to from light. Remembered rather
-   * than assumed, so flipping to light and back returns you to the theme you
-   * were on — "ihasmail", "system" or plain "dark" — instead of dropping
-   * everyone onto the same one. Never "light": that is the side being
-   * toggled away from.
+   * Installation policy changes this account has already had applied.
+   *
+   * The third power in #207: an admin turns a setting on for everybody who is
+   * already here, and readers may still turn it back off afterwards. That only
+   * works if "already applied" is remembered, or the next sign-in would undo
+   * their decision again and the setting would be enforcement wearing a
+   * different hat.
+   *
+   * Ids, not a high-water mark. The reporter's analogy is a schema migration,
+   * where each change carries its own version, and remembering the set rather
+   * than the maximum is what lets an admin add a change dated earlier than one
+   * already applied without it being silently skipped.
+   *
+   * Synced with the rest, so it is per account and not per browser: signing in
+   * on a phone must not apply everything a second time.
    */
-  lastDarkTheme: Exclude<Theme, "light">;
+  appliedPolicyChanges: string[];
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -135,6 +257,8 @@ export const DEFAULT_SETTINGS: Settings = {
    * it — is moved off it.
    */
   theme: "ihasmail",
+  palette: "ihasmail",
+  mode: "dark",
   accent: "teal",
   density: "cozy",
   readingPane: "right",
@@ -154,11 +278,18 @@ export const DEFAULT_SETTINGS: Settings = {
   requestReadReceipt: false,
   readReceiptPolicy: "ask",
   confirmDelete: false,
+  /*
+   * Right archives and left deletes, which is what the mail apps a phone came
+   * with already do. A default nobody has to learn beats a better one they do.
+   */
+  swipeRight: "archive",
+  swipeLeft: "delete",
   desktopNotifications: false,
   notificationSound: false,
   attachmentReminder: true,
   weekStart: 1,
   locale: "",
+  uiLanguage: "en",
   dateFormat: "auto",
   timeFormat: "auto",
   calendarDefaultView: "week",
@@ -168,6 +299,11 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultAlertMinutes: 10,
   timeZone: null,
   labelsSidebar: true,
+  birthdayCalendar: false,
+  icalSubscriptions: [],
+  listSortPreset: "newest",
+  listSortLevels: [],
+  listSortScope: "inbox",
   fontSize: "medium",
   templates: [],
   labels: [],
@@ -175,6 +311,12 @@ export const DEFAULT_SETTINGS: Settings = {
   sidebarCollapsed: false,
   showHiddenFolders: false,
   trustedImageSenders: [],
+  externalSenderBanner: false,
+  externalRecipientConfirm: false,
+  internalDomains: [],
+  replyAllThreshold: 0,
+  externalLinkWarning: false,
+  trustedLinkDomains: [],
   archiveOnReply: false,
   autoAdvance: "list",
   spellcheck: true,
@@ -190,7 +332,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ],
   defaultIdentityByAccount: {},
   hiddenIdentities: [],
-  lastDarkTheme: "ihasmail",
+  appliedPolicyChanges: [],
 };
 
 /**
@@ -235,7 +377,41 @@ export function acceptRemote(remote: Record<string, unknown>): Partial<Settings>
     if (value === undefined) continue;
     out[key] = value;
   }
+  /*
+   * A file written before palettes existed carries `theme` and neither
+   * `palette` nor `mode`, so it is read through the old enum. Settings live in
+   * the account's own Files and are opened by whatever version happens to run
+   * next, so this is not a one-release migration -- it has to keep working.
+   *
+   * Only when the new fields are absent: a file that has both is newer, and
+   * its `theme` is the derived copy rather than the choice.
+   */
+  if (out.palette === undefined && out.mode === undefined && typeof remote.theme === "string") {
+    const migrated = migrateTheme(remote.theme);
+    out.palette = migrated.palette;
+    out.mode = migrated.mode;
+  }
   return out as Partial<Settings>;
+}
+
+/**
+ * The settings file laid over the ones in hand, minus anything still queued.
+ *
+ * A change that has not been written up yet is newer than the file by
+ * definition, so it wins. Picking a language is where this showed: that
+ * remounts the tree, the remount re-reads the file, and the file still holds
+ * the language from before the click, so the click came undone. Reported as
+ * "sometimes it takes several clicks" — the click that stuck was the one made
+ * after the previous write had landed.
+ */
+export function mergeRemote(
+  current: Settings,
+  remote: Record<string, unknown>,
+  held: ReadonlySet<string> = new Set(),
+): Settings {
+  const incoming = acceptRemote(remote);
+  for (const key of held) delete incoming[key as keyof Settings];
+  return { ...current, ...incoming };
 }
 
 interface SettingsState {
@@ -246,35 +422,110 @@ interface SettingsState {
   importJson(json: string): boolean;
   /** Apply the account's settings file over the cached ones. */
   hydrate(remote: Record<string, unknown>): void;
+  /**
+   * Seed an account that has never had settings of its own.
+   *
+   * Only for that case, which is why it is not `update`: these are a starting
+   * point the reader may change, so applying them to somebody who already has
+   * settings would be overwriting choices rather than defaulting them.
+   */
+  seedFromPolicy(): void;
+  /**
+   * Apply the installation's change list, each entry once.
+   *
+   * Returns the changes that were applied, so the caller can say what moved --
+   * a setting changing under somebody without a word is the part of this the
+   * reporter was uneasy about, and rightly.
+   */
+  applyPolicyChanges(): PolicyChange[];
 }
 
 const initialSettings = loadJson<Settings>("settings", DEFAULT_SETTINGS);
+
+/**
+ * Whether the first frame is this account's settings or merely the defaults.
+ *
+ * False after every deploy, because deploys sign everyone out and sign-out
+ * clears the cache -- and false on any untrusted device, where the cache is
+ * never read. In that state `uiLanguage` starts as English and only becomes
+ * the account's choice once the settings file lands, which is why the
+ * authenticated tree waits for it.
+ */
+export const PAINTED_FROM_CACHE = hasCachedJson("settings");
 applyDateTimePrefs(initialSettings);
 
 export const useSettings = create<SettingsState>((set, get) => ({
   settings: initialSettings,
   update(patch) {
-    // Picking a theme anywhere — the toggle, Appearance, an imported file —
-    // is what teaches the toggle where to come back to. Doing it here rather
-    // than at the call sites means a fourth way to set a theme cannot forget.
-    const next = patch.theme && patch.theme !== "light" ? { ...patch, lastDarkTheme: patch.theme } : patch;
-    const settings = { ...get().settings, ...next };
+    /*
+     * `theme` is derived, never chosen: whatever set the palette or the mode --
+     * the toggle, Appearance, an imported file -- the legacy field is brought
+     * back into line here rather than at the call sites, so a fourth way to
+     * change the theme cannot forget to update it and strand an older device
+     * on a theme nobody picked.
+     */
+    /*
+     * Enforcement lives here rather than only on the controls. The controls are
+     * disabled and say why, which is the part a reader sees -- but a setting
+     * the installation has decided must not be changeable through an imported
+     * settings file, a keyboard shortcut, or a control somebody adds later and
+     * forgets to check. There is one door, so the lock is on it. Issue #207.
+     */
+    const merged = { ...get().settings, ...patch, ...policyEnforced() };
+    const prefersDark = Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+    const settings = { ...merged, theme: legacyTheme({ palette: merged.palette, mode: merged.mode }, prefersDark) };
     saveJson("settings", settings);
     set({ settings });
     applyTheme(settings);
     applyDateTimePrefs(settings);
+    applyLang(settings);
     // Dragging a splitter changes a device key on every frame and must not put
     // a request in the air; anything else is queued and coalesced.
-    if (Object.keys(next).some((k) => !DEVICE_KEYS.has(k as keyof Settings))) {
+    if (Object.keys(patch).some((k) => !DEVICE_KEYS.has(k as keyof Settings))) {
       queueSettingsPush(syncedPart(settings));
     }
   },
+  seedFromPolicy() {
+    const defaults = policyDefaults();
+    if (!Object.keys(defaults).length) return;
+    get().update(defaults);
+  },
+  /*
+   * The third power in #207, and the only one that remembers anything.
+   *
+   * A change is applied when this account has not already had it, whatever the
+   * setting currently says: the point is to reach everybody who is already
+   * here, so somebody who had turned it off before the admin decided does get
+   * it turned back on. That is intended and the reporter has confirmed it --
+   * the difference from `enforced` is that they may turn it off again
+   * afterwards and it will stay off, because the version is remembered.
+   *
+   * Ids rather than a high-water mark, so a change dated earlier than one
+   * already applied is not silently skipped.
+   *
+   * One `update` for the lot, not one per change: each would push a settings
+   * file, and a policy with four changes on a first sign-in would write four.
+   */
+  applyPolicyChanges() {
+    const seen = new Set(get().settings.appliedPolicyChanges ?? []);
+    const pending = policyChanges().filter((c) => !seen.has(c.version));
+    if (!pending.length) return [];
+    let patch: Partial<Settings> = {};
+    for (const c of pending) patch = { ...patch, ...c.settings };
+    get().update({ ...patch, appliedPolicyChanges: [...seen, ...pending.map((c) => c.version)] });
+    return pending;
+  },
   reset() {
-    saveJson("settings", DEFAULT_SETTINGS);
-    set({ settings: DEFAULT_SETTINGS });
-    applyTheme(DEFAULT_SETTINGS);
-    applyDateTimePrefs(DEFAULT_SETTINGS);
-    queueSettingsPush(syncedPart(DEFAULT_SETTINGS));
+    /* Back to how this installation starts an account, not to how ihasmail
+       starts one: resetting must not be a way around a policy, and the defaults
+       an admin chose are the honest meaning of "reset" where there are any. */
+    const base = { ...DEFAULT_SETTINGS, ...policyDefaults(), ...policyEnforced() };
+    saveJson("settings", base);
+    set({ settings: base });
+    applyTheme(base);
+    applyDateTimePrefs(base);
+    applyLang(base);
+    queueSettingsPush(syncedPart(base));
   },
   exportJson() {
     return JSON.stringify(get().settings, null, 2);
@@ -289,17 +540,57 @@ export const useSettings = create<SettingsState>((set, get) => ({
     }
   },
   hydrate(remote) {
-    const settings = { ...get().settings, ...acceptRemote(remote) };
+    /* Enforced values win over what the account's own file says: a policy that
+       an older sign-in has already written past would otherwise stay written
+       past for ever. */
+    const settings = { ...mergeRemote(get().settings, remote, pendingSettingsKeys()), ...policyEnforced() };
     // Cache it, so the next first frame on this browser is already right.
     saveJson("settings", settings);
     set({ settings });
     applyTheme(settings);
     applyDateTimePrefs(settings);
+    applyLang(settings);
   },
 }));
 
 function applyDateTimePrefs(s: Settings): void {
+  // The interface language feeds the automatic locale, so month and weekday
+  // names follow the language somebody chose rather than staying English.
+  setUiLanguageForFormatting(resolveUiLanguage(s.uiLanguage));
   setDateTimePrefs({ locale: s.locale, dateFormat: s.dateFormat, timeFormat: s.timeFormat });
+}
+
+/**
+ * Put the served language on `<html lang>`.
+ *
+ * Chrome offers to translate when the language it detects does not match the
+ * one the page declares, so a `lang` that is briefly wrong is enough to raise
+ * the prompt on a page that was already correct — and accepting that prompt is
+ * what rewrites the DOM under React and crashes the component tree
+ * (facebook/react#11538).
+ *
+ * So this is not done in an effect after mount. It runs where `applyTheme`
+ * runs: at module load, from the localStorage cache, before `createRoot()` has
+ * rendered anything and therefore before first paint. `index.html` ships
+ * `lang="en"` statically, so the very first bytes are already right for the
+ * default and this only ever corrects a reader who chose otherwise.
+ *
+ * There is no server-rendered alternative to reach for. ihasmail serves a
+ * static shell and keeps no account state; the settings file lives in the
+ * reader's own JMAP Files on the mail server, so the only way to read it
+ * before the page existed would be to authenticate to Stalwart on every page
+ * load, which is the thing the whole design avoids.
+ */
+export function applyLang(s: Settings = useSettings.getState().settings): void {
+  const tag = resolveUiLanguage(s.uiLanguage);
+  document.documentElement.lang = tag;
+  /*
+   * The catalogue is fetched, so it lands a beat after the attribute. That
+   * order is deliberate: `lang` is what stops Chrome offering to translate,
+   * and it should not wait on a network request to say something it already
+   * knows. English needs no fetch at all and resolves immediately.
+   */
+  void loadLanguage(tag);
 }
 
 /** Background of each theme, for the browser chrome (`theme-color`). */
@@ -307,28 +598,37 @@ const THEME_COLOR = { light: "#ffffff", dark: "#0b1220", ihasmail: "#0d2430" } a
 
 export function applyTheme(s: Settings = useSettings.getState().settings): void {
   const root = document.documentElement;
-  const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
-  const dark = isDarkTheme(s.theme, prefersDark);
-  // ihasmail keeps data-theme="dark" and adds a palette on top, so every
-  // dark-only rule in the stylesheet applies to it without being repeated.
-  root.dataset.theme = dark ? "dark" : "light";
-  if (s.theme === "ihasmail") root.dataset.palette = "ihasmail";
+  const prefersDark = Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+  const mode = effectiveMode(s.mode, prefersDark);
+  /*
+   * Two attributes, because they answer two questions. `data-theme` is the
+   * mode, and every dark-only rule in the stylesheet keys off it without
+   * knowing any palette exists; `data-palette` layers the colours on top. The
+   * accent variants out-specify both, which is what lets an accent still apply
+   * over any palette.
+   */
+  root.dataset.theme = mode;
+  if (s.palette && s.palette !== "default") root.dataset.palette = s.palette;
   else delete root.dataset.palette;
   root.dataset.density = s.density;
   root.dataset.accent = s.accent;
   root.dataset.fontsize = s.fontSize;
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]:not([media])');
-  if (meta) meta.content = s.theme === "ihasmail" ? THEME_COLOR.ihasmail : dark ? THEME_COLOR.dark : THEME_COLOR.light;
+  if (meta) meta.content = paletteThemeColor(s.palette, mode);
 }
 
 /**
- * Where the top-bar toggle goes next. Away from dark is always light; back
- * from light is wherever you last were, which is the whole point of
- * remembering it.
+ * The browser chrome colour, read from the palette's own background so it does
+ * not have to be listed twice and cannot drift from it.
  */
-export function toggleTarget(effective: "light" | "dark", lastDarkTheme: Settings["lastDarkTheme"]): Theme {
-  return effective === "dark" ? "light" : lastDarkTheme;
+function paletteThemeColor(palette: PaletteId, mode: "light" | "dark"): string {
+  if (typeof getComputedStyle === "function") {
+    const value = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+    if (value) return value;
+  }
+  return mode === "dark" ? THEME_COLOR.dark : THEME_COLOR.light;
 }
+
 
 /** Whether a theme paints dark, resolving "system" against the OS. */
 export function isDarkTheme(theme: Theme, prefersDark = false): boolean {
@@ -337,6 +637,10 @@ export function isDarkTheme(theme: Theme, prefersDark = false): boolean {
 
 if (typeof window !== "undefined") {
   applyTheme();
+  // Before `createRoot().render()` in main.tsx, which imports this module on
+  // the way in -- so the language is declared before React has produced a
+  // single node, let alone painted one.
+  applyLang();
   window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener("change", () => applyTheme());
 }
 
@@ -345,7 +649,7 @@ if (typeof window !== "undefined") {
  * resolves to whatever the OS is doing right now, and follows it as it changes.
  */
 export function useEffectiveTheme(): "light" | "dark" {
-  const theme = useSettings((s) => s.settings.theme);
+  const mode = useSettings((s) => s.settings.mode);
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
   useEffect(() => {
     const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -354,7 +658,7 @@ export function useEffectiveTheme(): "light" | "dark" {
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
   }, []);
-  return isDarkTheme(theme, systemDark) ? "dark" : "light";
+  return effectiveMode(mode, systemDark);
 }
 
 export const settings = () => useSettings.getState().settings;

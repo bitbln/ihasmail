@@ -3,16 +3,26 @@ import { Folder, Inbox } from "lucide-react";
 import { useMail } from "@/store/mail";
 import { Dialog } from "@/ui/dialog";
 import type { Id, Mailbox } from "@/jmap/types";
+import { t } from "@/lib/i18n";
+import { mailboxDisplayPath } from "@/lib/mailboxName";
 
-export function MailboxPicker({ title, onClose, onPick, exclude }: { title: string; onClose: () => void; onPick: (id: Id) => void; exclude?: Id[] }) {
+/**
+ * @param need which right a folder has to grant to be worth offering.
+ *   `mayAddItems` for a move — a folder you cannot file into is not a
+ *   destination — and `mayReadItems` for going somewhere, since a shared
+ *   folder you may read but not write to is still somewhere you can go. The
+ *   distinction only shows up on shared mail, which is exactly where getting
+ *   it wrong would be invisible to whoever wrote the code.
+ */
+export function MailboxPicker({ title, onClose, onPick, exclude, need = "mayAddItems" }: { title: string; onClose: () => void; onPick: (id: Id) => void; exclude?: Id[]; need?: "mayAddItems" | "mayReadItems" }) {
   const mailboxes = useMail((s) => s.mailboxes);
   const mailboxPath = useMail((s) => s.mailboxPath);
   const [q, setQ] = useState("");
   const [active, setActive] = useState(0);
   const list = useMemo(() => {
     const all = Object.values(mailboxes)
-      .filter((m) => !exclude?.includes(m.id) && m.myRights.mayAddItems)
-      .map((m) => ({ m, path: mailboxPath(m.id) }))
+      .filter((m) => !exclude?.includes(m.id) && m.myRights[need])
+      .map((m) => ({ m, path: mailboxDisplayPath(m, mailboxes) }))
       .sort((a, b) => (a.m.role === "inbox" ? -1 : b.m.role === "inbox" ? 1 : a.path.localeCompare(b.path)));
     const ql = q.trim().toLowerCase();
     return ql ? all.filter((x) => x.path.toLowerCase().includes(ql)) : all;
@@ -23,7 +33,7 @@ export function MailboxPicker({ title, onClose, onPick, exclude }: { title: stri
       <input
         className="input"
         autoFocus
-        placeholder="Type a folder name…"
+        placeholder={t("Type a folder name…")}
         value={q}
         onChange={(e) => {
           setQ(e.target.value);
@@ -47,7 +57,7 @@ export function MailboxPicker({ title, onClose, onPick, exclude }: { title: stri
         {list.map(({ m, path }, i) => (
           <PickerRow key={m.id} m={m} path={path} active={i === active} onClick={() => onPick(m.id)} onHover={() => setActive(i)} />
         ))}
-        {!list.length && <div className="empty" style={{ padding: 24 }}>No matching folders</div>}
+        {!list.length && <div className="empty" style={{ padding: 24 }}>{t("No matching folders")}</div>}
       </div>
     </Dialog>
   );

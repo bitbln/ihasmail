@@ -8,6 +8,7 @@ import { RuleDialog } from "../settings/RuleDialog";
 import { toast } from "@/ui/toast";
 import { Spinner } from "@/ui/misc";
 import { Dialog } from "@/ui/dialog";
+import { plural, t, tNode } from "@/lib/i18n";
 
 /** "Filter messages like this…" — creates a Sieve rule seeded from a message, optionally applying it to the current folder. */
 export function FilterFromMessageDialog({ email, mailboxId, onClose }: { email: Email; mailboxId: Id | null; onClose: () => void }) {
@@ -26,17 +27,17 @@ export function FilterFromMessageDialog({ email, mailboxId, onClose }: { email: 
 
   if (!sieve.available) {
     return (
-      <Dialog open onClose={onClose} title="Filters unavailable" size="sm" footer={<button className="btn" onClick={onClose}>Close</button>}>
-        <p>Sieve filtering is not enabled for this account.</p>
+      <Dialog open onClose={onClose} title={t("Filters unavailable")} size="sm" footer={<button className="btn" onClick={onClose}>{t("Close")}</button>}>
+        <p>{t("Sieve filtering is not enabled for this account.")}</p>
       </Dialog>
     );
   }
-  if (!ready) return <Dialog open onClose={onClose} title="Create filter" size="sm"><Spinner /></Dialog>;
+  if (!ready) return <Dialog open onClose={onClose} title={t("Create filter")} size="sm"><Spinner /></Dialog>;
 
   const { rules, loaded, damage } = sieve.rules();
   if (rules === null) {
     return (
-      <Dialog open onClose={onClose} title="Create filter" size="sm" footer={<button className="btn" onClick={onClose}>Close</button>}>
+      <Dialog open onClose={onClose} title={t("Create filter")} size="sm" footer={<button className="btn" onClick={onClose}>{t("Close")}</button>}>
         {/*
           Three different situations, and telling them apart matters: one is
           permanent and two are a reload away. Saying "written by hand" when the
@@ -44,11 +45,11 @@ export function FilterFromMessageDialog({ email, mailboxId, onClose }: { email: 
           looking for a problem they do not have.
         */}
         {damage ? (
-          <p>Your filter script {damage}, so only part of it arrived. Adding a rule would write that part back over the whole thing. Reload the page and try again.</p>
+          <p>{t("Your filter script {damage}, so only part of it arrived. Adding a rule would write that part back over the whole thing. Reload the page and try again.", { damage })}</p>
         ) : loaded ? (
-          <p>Your active Sieve script was written by hand, so rules can't be added automatically. Open <b>Settings → Filters & rules</b> to edit the script or switch to managed rules.</p>
+          <p>{tNode("Your active Sieve script was written by hand, so rules can't be added automatically. Open {where} to edit the script or switch to managed rules.", { where: <b>{t("Settings → Filters & rules")}</b> })}</p>
         ) : (
-          <p>Your filter script couldn't be read just now, so adding a rule would risk overwriting it. Reload the page and try again.</p>
+          <p>{t("Your filter script couldn't be read just now, so adding a rule would risk overwriting it. Reload the page and try again.")}</p>
         )}
       </Dialog>
     );
@@ -57,7 +58,7 @@ export function FilterFromMessageDialog({ email, mailboxId, onClose }: { email: 
   return (
     <RuleDialog
       rule={rule}
-      title="Filter messages like this"
+      title={t("Filter messages like this")}
       saveLabel="Create filter"
       applyMailbox={mailbox ? { id: mailbox.id, name: mailbox.name } : null}
       applyByDefault
@@ -78,24 +79,30 @@ export function FilterFromMessageDialog({ email, mailboxId, onClose }: { email: 
 export async function saveAndApply(r: SieveRule, existing: SieveRule[], applyMailboxId: Id | null) {
   const sieve = useSieve.getState();
   const created = !existing.some((x) => x.id === r.id);
-  const verb = created ? "created" : "saved";
+  const saved = !created;
   try {
     await sieve.saveRules(upsertRule(existing, r));
   } catch (err) {
-    toast.error(`Could not save filter: ${(err as Error).message}`);
+    toast.error(t("Could not save filter: {error}", { error: (err as Error).message }));
     return;
   }
   if (!applyMailboxId) {
-    toast.success(`Filter ${verb} — it will run on new mail`);
+    toast.success(saved ? t("Filter saved — it will run on new mail") : t("Filter created — it will run on new mail"));
     return;
   }
-  const tid = toast.show("Applying filter to existing messages…", { duration: 0 });
+  const tid = toast.show(t("Applying filter to existing messages…"), { duration: 0 });
   try {
     const res = await applyRuleToMailbox(r, applyMailboxId);
     toast.dismiss(tid);
-    toast.success(`Filter ${verb} · applied to ${res.matched} of ${res.scanned} message${res.scanned === 1 ? "" : "s"}${res.skippedActions.length ? ` (skipped: ${res.skippedActions.join("; ")})` : ""}`, { duration: 8000 });
+    toast.success(
+      (saved ? t("Filter saved") : t("Filter created"))
+      + " · "
+      + plural(res.scanned, { one: "applied to {matched} of {n} message", other: "applied to {matched} of {n} messages" }, { matched: res.matched })
+      + (res.skippedActions.length ? " " + t("(skipped: {actions})", { actions: res.skippedActions.join("; ") }) : ""),
+      { duration: 8000 },
+    );
   } catch (err) {
     toast.dismiss(tid);
-    toast.error(`Filter saved, but applying it failed: ${(err as Error).message}`);
+    toast.error(t("Filter saved, but applying it failed: {error}", { error: (err as Error).message }));
   }
 }

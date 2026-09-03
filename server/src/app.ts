@@ -16,6 +16,7 @@ import {
   forgetUpstreamSession,
   getAccountInfo,
   getUpstreamSession,
+  upstreamFor,
   localizeSession,
 } from "./upstream.js";
 import {
@@ -30,12 +31,27 @@ import {
   revokeAppPassword,
 } from "./account.js";
 import { imageProxyHandler } from "./imageproxy.js";
+import { icsProxyHandler } from "./icsproxy.js";
 import { staticHandler } from "./static.js";
 
 type Env = { Variables: { session: LiveSession } };
 
 export const sessions: SessionBackend = new SessionStore(config.sessionFile);
 const loginLimiter = new RateLimiter(config.loginRateLimit, 15 * 60_000);
+/*
+ * The backstop that is never refunded.
+ *
+ * `loginLimiter` guards password guessing and gives its attempts back when the
+ * upstream never judged the password (#239) -- otherwise retrying through an
+ * outage locks somebody out until after it has ended. But "not counted" cannot
+ * mean "unlimited": each attempt still costs ihasmail an outbound connection
+ * that may sit there until `UPSTREAM_TIMEOUT`, so a flood during an outage is
+ * the one moment the endpoint is cheapest to abuse.
+ *
+ * Hence a second ceiling, per address, twenty times looser and refunded never.
+ * A person retrying an outage will not come near it; something hammering will.
+ */
+const loginFloodLimiter = new RateLimiter(config.loginRateLimit * 20, 15 * 60_000);
 /**
  * Credential changes verify the current password upstream, and Stalwart's
  * fail2ban counts those failures against the *caller's* IP — which for a proxy
@@ -82,7 +98,9 @@ const securityHeaders: MiddlewareHandler = async (c, next) => {
   await next();
   const h = c.res.headers;
   h.set("X-Content-Type-Options", "nosniff");
-  h.set("X-Frame-Options", "DENY");
+  /* A route that must be framable says so; everything else is DENY. The blob
+     route is the only one, and only for PDFs -- see the note there. */
+  if (!h.has("X-Frame-Options")) h.set("X-Frame-Options", "DENY");
   h.set("Referrer-Policy", "no-referrer");
   h.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
   h.set("Cross-Origin-Opener-Policy", "same-origin");
@@ -114,12 +132,28 @@ const requireSession: MiddlewareHandler<Env> = async (c, next) => {
   await next();
 };
 
+/**
+ * Scope the session cookie to the mount, not the whole host.
+ *
+ * Under a prefix the browser is talking to a hostname that other applications
+ * share, and a cookie at `/` would be sent to every one of them. Path scoping
+ * is not a security boundary -- anything on the origin can reach the cookie
+ * jar -- but it keeps the credential out of requests that have no business
+ * carrying it, and it lets two ihasmail instances live at `/mail` and
+ * `/mail2` on one host without signing each other out, which a shared cookie
+ * name at `/` would do.
+ *
+ * `/` for the root case: an empty Path is not the same thing and browsers
+ * would fall back to the directory of the request that set it.
+ */
+const cookiePath = config.basePath || "/";
+
 function setSessionCookie(c: Context, value: string, remember: boolean) {
   setCookie(c, config.cookieName, value, {
     httpOnly: true,
     sameSite: "Lax",
     secure: isSecureRequest(c),
-    path: "/",
+    path: cookiePath,
     ...(remember ? { maxAge: config.sessionRememberTtl } : {}),
   });
 }
@@ -130,13 +164,18 @@ function upstreamFailure(c: Context, err: unknown) {
   }
   const name = (err as Error)?.name ?? "";
   if (name === "TimeoutError" || name === "AbortError") {
-    return c.json({ error: "upstream_timeout", message: "The mail server did not respond in time" }, 504);
+    return c.json({ error: "upstream_timeout", message: "The mail server did not respond in time. This is not a problem with your password." }, 504);
   }
   console.error("[ihasmail] upstream failure:", err);
-  return c.json({ error: "upstream_error", message: "Could not reach the mail server" }, 502);
+  return c.json({ error: "upstream_error", message: "Could not reach the mail server. This is not a problem with your password." }, 502);
 }
 
-export function createApp(): Hono<Env> {
+/**
+ * `basePath` is a parameter rather than read straight from the config so the
+ * tests can mount the same app twice, at the root and under a prefix, without
+ * re-importing the module to change one environment variable.
+ */
+export function createApp(basePath = config.basePath): Hono<Env> {
   const app = new Hono<Env>();
   app.use("*", securityHeaders);
 
@@ -151,6 +190,9 @@ export function createApp(): Hono<Env> {
       sourceUrl: config.sourceUrl,
       imageProxy: config.imageProxy,
       maxUploadBytes: config.maxUploadBytes,
+      /* Sent before sign-in like the rest of this: it says what the
+         installation has decided, not anything about who is asking. */
+      settingsPolicy: config.settingsPolicy,
     }),
   );
 
@@ -169,7 +211,24 @@ export function createApp(): Hono<Env> {
     if (!username || !password) return c.json({ error: "missing_credentials" }, 400);
     if (username.length > 320 || password.length > 1024) return c.json({ error: "bad_request" }, 400);
 
+    /*
+     * Three checks, answering different questions.
+     *
+     * `limitKey` is this username from this address, and `ip` is any username
+     * from it -- both guard guessing, and both are given back when the upstream
+     * never got as far as judging the password. Refunding only the first would
+     * not fix #239: ten retries through an outage would still spend the address
+     * budget, and behind one office NAT that budget belongs to the whole
+     * building.
+     *
+     * The flood ceiling is the one that is never refunded, and it is the reason
+     * the other two safely can be.
+     */
     const limitKey = `${ip}|${username.toLowerCase()}`;
+    if (!loginFloodLimiter.check(ip)) {
+      c.header("Retry-After", String(loginFloodLimiter.retryAfterSeconds(ip)));
+      return c.json({ error: "rate_limited", message: "Too many login attempts. Please wait and try again." }, 429);
+    }
     if (!loginLimiter.check(limitKey) || !loginLimiter.check(ip)) {
       c.header("Retry-After", String(loginLimiter.retryAfterSeconds(limitKey)));
       return c.json({ error: "rate_limited", message: "Too many login attempts. Please wait and try again." }, 429);
@@ -179,12 +238,16 @@ export function createApp(): Hono<Env> {
     const effectivePassword = totp ? `${password}$${totp}` : password;
     const authorization = `Basic ${Buffer.from(`${username}:${effectivePassword}`, "utf8").toString("base64")}`;
     try {
-      const upstream = await fetchUpstreamSession(authorization);
+      const upstream = await fetchUpstreamSession(authorization, upstreamFor(username));
       // ihasmail requires Stalwart 0.16 or newer. Refuse here, once and
       // clearly, rather than signing someone in and letting Files, the account
       // locale and self-service credentials each fail in their own way with
       // nothing to connect them. The credentials were good, so say so.
       if (!hasStalwartRegistry(upstream)) {
+        // The credentials were accepted; only the server is too old. Not an
+        // attempt worth counting against them.
+        loginLimiter.refund(limitKey);
+        loginLimiter.refund(ip);
         return c.json(
           {
             error: "unsupported_server",
@@ -232,6 +295,16 @@ export function createApp(): Hono<Env> {
           401,
         );
       }
+      /*
+       * A 401 is a judgement about the password and stays counted. Anything
+       * else -- refused, timed out, DNS, TLS -- is the upstream failing to
+       * answer, which says nothing about the credentials and must not spend
+       * somebody's attempts while they wait for it to come back (#239).
+       */
+      if (!(err instanceof UpstreamError && err.status === 401)) {
+        loginLimiter.refund(limitKey);
+        loginLimiter.refund(ip);
+      }
       return upstreamFailure(c, err);
     }
   });
@@ -239,13 +312,13 @@ export function createApp(): Hono<Env> {
   api.get("/auth/session", requireSession, async (c) => {
     const session = c.get("session");
     try {
-      const upstream = await getUpstreamSession(session.id, session.authorization, c.req.query("refresh") === "1");
+      const upstream = await getUpstreamSession(session.id, session.authorization, upstreamFor(session.username), c.req.query("refresh") === "1");
       const info = await getAccountInfo(session.id, session.authorization, upstream);
       return c.json(localizeSession(upstream, sessionExtras(session, info)));
     } catch (err) {
       if (err instanceof UpstreamError && err.status === 401) {
         sessions.destroy(session.id);
-        deleteCookie(c, config.cookieName, { path: "/" });
+        deleteCookie(c, config.cookieName, { path: cookiePath });
       }
       return upstreamFailure(c, err);
     }
@@ -258,7 +331,7 @@ export function createApp(): Hono<Env> {
       sessions.destroy(session.id);
       forgetUpstreamSession(session.id);
     }
-    deleteCookie(c, config.cookieName, { path: "/" });
+    deleteCookie(c, config.cookieName, { path: cookiePath });
     return c.json({ ok: true });
   });
 
@@ -456,8 +529,8 @@ export function createApp(): Hono<Env> {
       return c.json({ error: "unsupported_media_type" }, 415);
     }
     try {
-      const upstream = await getUpstreamSession(session.id, session.authorization);
-      const res = await fetch(absoluteUpstream(upstream.apiUrl), {
+      const upstream = await getUpstreamSession(session.id, session.authorization, upstreamFor(session.username));
+      const res = await fetch(absoluteUpstream(upstream.apiUrl, upstream.baseUrl), {
         method: "POST",
         headers: {
           authorization: session.authorization,
@@ -471,7 +544,7 @@ export function createApp(): Hono<Env> {
       if (res.status === 401) {
         sessions.destroy(session.id);
         forgetUpstreamSession(session.id);
-        deleteCookie(c, config.cookieName, { path: "/" });
+        deleteCookie(c, config.cookieName, { path: cookiePath });
         return c.json({ error: "unauthenticated" }, 401);
       }
       return passthrough(res);
@@ -490,8 +563,8 @@ export function createApp(): Hono<Env> {
     // suggestion; count the bytes as they go past.
     const body = c.req.raw.body ? c.req.raw.body.pipeThrough(byteCap(config.maxUploadBytes)) : null;
     try {
-      const upstream = await getUpstreamSession(session.id, session.authorization);
-      const url = absoluteUpstream(expandTemplate(upstream.uploadUrl, { accountId }));
+      const upstream = await getUpstreamSession(session.id, session.authorization, upstreamFor(session.username));
+      const url = absoluteUpstream(expandTemplate(upstream.uploadUrl, { accountId }), upstream.baseUrl);
       const res = await fetch(url, {
         method: "POST",
         headers: {
@@ -516,8 +589,8 @@ export function createApp(): Hono<Env> {
     const accept = c.req.query("accept") ?? "application/octet-stream";
     const inline = c.req.query("inline") === "1";
     try {
-      const upstream = await getUpstreamSession(session.id, session.authorization);
-      const url = absoluteUpstream(expandTemplate(upstream.downloadUrl, { accountId, blobId, name, type: accept }));
+      const upstream = await getUpstreamSession(session.id, session.authorization, upstreamFor(session.username));
+      const url = absoluteUpstream(expandTemplate(upstream.downloadUrl, { accountId, blobId, name, type: accept }), upstream.baseUrl);
       const res = await fetch(url, {
         // Ask for the bytes as they are. undici would otherwise negotiate gzip
         // on our behalf and hand back a decompressed body whose content-length
@@ -538,7 +611,19 @@ export function createApp(): Hono<Env> {
       );
       headers.set("X-Content-Type-Options", "nosniff");
       // Sandbox everything except the browser's built-in PDF viewer (which needs scripts to render).
-      if (!(safeInline && type === "application/pdf")) {
+      if (securityHeadersFor(type, safeInline) === "SAMEORIGIN") {
+        /*
+         * The one response on the server that may be framed.
+         *
+         * A PDF is shown in an iframe -- it is its own document and the app
+         * cannot lay it out -- and the blanket X-Frame-Options: DENY above
+         * blocked that, so the preview showed Chrome's "refused to connect"
+         * instead of the file. SAMEORIGIN, not a relaxation to any site: the
+         * frame is ours, on our origin, and the app's own CSP already says
+         * frame-src 'self'. Nothing else here is framed, so nothing else asks.
+         */
+        headers.set("X-Frame-Options", "SAMEORIGIN");
+      } else {
         headers.set("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:");
       }
       headers.set("Cache-Control", "private, max-age=3600");
@@ -555,8 +640,8 @@ export function createApp(): Hono<Env> {
     const closeafter = c.req.query("closeafter") ?? "no";
     const ping = c.req.query("ping") ?? "30";
     try {
-      const upstream = await getUpstreamSession(session.id, session.authorization);
-      const url = absoluteUpstream(expandTemplate(upstream.eventSourceUrl, { types, closeafter, ping }));
+      const upstream = await getUpstreamSession(session.id, session.authorization, upstreamFor(session.username));
+      const url = absoluteUpstream(expandTemplate(upstream.eventSourceUrl, { types, closeafter, ping }), upstream.baseUrl);
       const controller = new AbortController();
       c.req.raw.signal.addEventListener("abort", () => controller.abort());
       const res = await fetch(url, {
@@ -578,6 +663,9 @@ export function createApp(): Hono<Env> {
 
   // ---------- Remote image privacy proxy ----------
   api.get("/image", requireSession, imageProxyHandler);
+// Behind the session for the same reason the image proxy is: an open fetcher
+// on someone else's server is a gift to whoever finds it.
+api.get("/ics", requireSession, icsProxyHandler);
 
   api.notFound((c) => c.json({ error: "not_found" }, 404));
   api.onError((err, c) => {
@@ -585,10 +673,10 @@ export function createApp(): Hono<Env> {
     return c.json({ error: "internal_error" }, 500);
   });
 
-  app.route("/api", api);
+  app.route(`${basePath}/api`, api);
 
   // ---------- Static SPA ----------
-  app.get("*", staticHandler(config.staticDir));
+  app.get("*", staticHandler(config.staticDir, basePath));
   return app;
 }
 
@@ -695,6 +783,15 @@ function sanitizeContentType(ct: string): string {
   }
   if (lower.startsWith("text/")) return `${lower}; charset=utf-8`;
   return lower || "application/octet-stream";
+}
+
+/**
+ * What X-Frame-Options a blob response carries. Exported so the rule is
+ * testable without standing up an upstream: a PDF served inline may be framed
+ * by us and nothing else may be framed at all.
+ */
+export function securityHeadersFor(type: string, safeInline: boolean): "SAMEORIGIN" | "DENY" {
+  return safeInline && type.split(";")[0]!.trim() === "application/pdf" ? "SAMEORIGIN" : "DENY";
 }
 
 function isInlineSafe(type: string): boolean {

@@ -5,6 +5,7 @@ import type { CalendarEvent, Email, EmailBodyPart } from "@/jmap/types";
 import { useCalendar, toInstance, myParticipantKeys, isAttendee, participantEmail } from "@/store/calendar";
 import { formatTimeRange } from "@/lib/dates";
 import { toast } from "@/ui/toast";
+import { t } from "@/lib/i18n";
 
 export function InviteCard({ email, part }: { email: Email; part: EmailBodyPart }) {
   const cal = useCalendar();
@@ -71,7 +72,7 @@ export function InviteCard({ email, part }: { email: Email; part: EmailBodyPart 
       if (!calId) throw new Error("No calendar available");
       const id = await cal.importEvent(ev, calId);
       setExisting(await cal.getEvent(id));
-      toast.success("Added to your calendar");
+      toast.success(t("Added to your calendar"));
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
@@ -86,12 +87,12 @@ export function InviteCard({ email, part }: { email: Email; part: EmailBodyPart 
       <div className="row" style={{ alignItems: "flex-start" }}>
         <Calendar size={20} style={{ color: "var(--accent)", marginTop: 2 }} />
         <div className="grow">
-          <div className="hint" style={{ marginBottom: 2 }}>{title}{method === "REPLY" && organizer ? "" : ""}</div>
+          <div className="hint" style={{ marginBottom: 2 }}>{title}</div>
           <h4>{ev.title || "(untitled event)"}</h4>
-          {inst && <div className="small">{formatTimeRange(inst.start, inst.end, inst.allDay)}{ev.timeZone ? ` (${ev.timeZone})` : ""}</div>}
+          {inst && <div className="small">{`${formatTimeRange(inst.start, inst.end, inst.allDay)}${ev.timeZone ? ` (${ev.timeZone})` : ""}`}</div>}
           {location && <div className="small muted row gap-4"><MapPin size={13} /> {location}</div>}
-          {organizer && <div className="small muted">Organizer: {organizer.name || participantEmail(organizer)}</div>}
-          {attendees.length > 0 && <div className="small muted">{attendees.length} attendee{attendees.length === 1 ? "" : "s"}</div>}
+          {organizer && <div className="small muted">{t("Organizer: {name}", { name: organizer.name || participantEmail(organizer) })}</div>}
+          {attendees.length > 0 && <div className="small muted">{`${attendees.length} attendee${attendees.length === 1 ? "" : "s"}`}</div>}
           {method === "REPLY" && (
             <div className="small" style={{ marginTop: 4 }}>
               {attendees.map((a) => <div key={participantEmail(a) || a.name}>{a.name || participantEmail(a)}: <b>{a.participationStatus ?? "unknown"}</b></div>)}
@@ -108,14 +109,14 @@ export function InviteCard({ email, part }: { email: Email; part: EmailBodyPart 
               <button className={`btn btn-sm ${myStatus === "declined" ? "btn-danger" : ""}`} disabled={Boolean(busy)} onClick={() => void respond("declined")}><X size={14} /> {myStatus === "declined" ? "Declined" : "No"}</button>
             </>
           ) : (
-            !existing && <button className="btn btn-sm" disabled={Boolean(busy)} onClick={() => void addToCalendar()}><Calendar size={14} /> Add to calendar</button>
+            !existing && <button className="btn btn-sm" disabled={Boolean(busy)} onClick={() => void addToCalendar()}><Calendar size={14} />  {t("Add to calendar")}</button>
           )}
-          {existing && inst && <button className="btn btn-ghost btn-sm" onClick={() => navigate(`/calendar/day/${inst.start.toISOString().slice(0, 10)}`)}>Open in calendar</button>}
+          {existing && inst && <button className="btn btn-ghost btn-sm" onClick={() => navigate(`/calendar/day/${inst.start.toISOString().slice(0, 10)}`)}>{t("Open in calendar")}</button>}
         </div>
       )}
       {method === "CANCEL" && existing && (
         <div className="rsvp">
-          <button className="btn btn-sm btn-danger" disabled={Boolean(busy)} onClick={async () => { try { await cal.destroyEvent(existing, false, "series"); setExisting(null); toast.success("Removed from calendar"); } catch (err) { toast.error((err as Error).message); } }}>Remove from calendar</button>
+          <button className="btn btn-sm btn-danger" disabled={Boolean(busy)} onClick={async () => { try { await cal.destroyEvent(existing, false, "series"); setExisting(null); toast.success(t("Removed from calendar")); } catch (err) { toast.error((err as Error).message); } }}>{t("Remove from calendar")}</button>
         </div>
       )}
       <span className="sr-only">{email.id}</span>

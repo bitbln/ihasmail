@@ -33,6 +33,7 @@ let pending: Record<string, unknown> | null = null;
 let inFlight: Promise<void> | null = null;
 /** Nothing is pushed before the first load has settled, or we would race it. */
 let armed = false;
+let loadedFor: string | null = null;
 let listenersBound = false;
 
 export function settingsSyncAvailable(): boolean {
@@ -62,15 +63,36 @@ export async function loadRemoteSettings(): Promise<Record<string, unknown> | nu
   }
 }
 
+/**
+ * Has this account's settings file already been read on this page load?
+ *
+ * Claims the account as a side effect, so two callers cannot both start a
+ * read. The subtree that does the reading is keyed on the language version
+ * and so is deliberately remounted whenever somebody picks a language;
+ * without this the remount re-reads a file written before the change and
+ * applies it, putting the old language back.
+ *
+ * Cleared by `stopSettingsSync`, so signing out and back in reads again.
+ */
+export function settingsAlreadyLoadedFor(accountId: string | null | undefined): boolean {
+  if (!accountId) return true;
+  if (loadedFor === accountId) return true;
+  loadedFor = accountId;
+  return false;
+}
+
 /** Allow pushes. Called once the first load has settled, either way. */
 export function armSettingsSync(): void {
   armed = true;
   bindFlushListeners();
+  // A change made while the read was in flight has been waiting for this.
+  if (pending) void flushSettingsPush();
 }
 
 /** Stop syncing and drop anything queued (logout). */
 export function stopSettingsSync(): void {
   armed = false;
+  loadedFor = null;
   pending = null;
   if (timer !== null) {
     window.clearTimeout(timer);
@@ -84,13 +106,41 @@ export function stopSettingsSync(): void {
  * one request goes out once the changes stop.
  */
 export function queueSettingsPush(synced: Record<string, unknown>): void {
-  if (!armed || !settingsSyncAvailable()) return;
+  if (!settingsSyncAvailable()) return;
+  /*
+   * Held, not dropped, before the first load has settled.
+   *
+   * This used to return here, which silently threw the change away: a
+   * language picked in the second or so before the settings file came back
+   * was never written, so it survived until the next reload and no further.
+   * That is the other half of "sometimes it takes several clicks" -- the
+   * click that stuck was one made after the read had finished.
+   *
+   * Keeping it is safe because `hydrate` refuses to overwrite a key that is
+   * still queued, so the newer local change wins over the older file rather
+   * than racing it. `armSettingsSync` writes whatever is waiting.
+   */
   pending = synced;
+  if (!armed) return;
   if (timer !== null) window.clearTimeout(timer);
   timer = window.setTimeout(() => {
     timer = null;
     void flushSettingsPush();
   }, DEBOUNCE_MS);
+}
+
+/**
+ * The keys of a change that has been made but not yet written up.
+ *
+ * `hydrate` needs these: a settings file read from the server is older than an
+ * unflushed local change by definition, so applying it wholesale hands the
+ * user back the value they just replaced. Switching language made that visible
+ * — it remounts the tree, the remount re-reads the file, and the file still
+ * says the old language — but the race is general and a slow read would lose
+ * any click made inside the debounce window.
+ */
+export function pendingSettingsKeys(): ReadonlySet<string> {
+  return new Set(pending ? Object.keys(pending) : []);
 }
 
 /** Write anything queued now, rather than waiting out the debounce. */

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { create } from "zustand";
+import { t } from "@/lib/i18n";
 
 interface DialogProps {
   open: boolean;
@@ -71,7 +72,7 @@ export function Dialog({ open, onClose, title, children, footer, size = "md", cl
         {title !== undefined && (
           <div className="dialog-head">
             <h2>{title}</h2>
-            <button className="icon-btn" onClick={onClose} aria-label="Close">
+            <button className="icon-btn" onClick={onClose} aria-label={t("Close")}>
               <X size={20} />
             </button>
           </div>
@@ -86,9 +87,28 @@ export function Dialog({ open, onClose, title, children, footer, size = "md", cl
 
 /* ---------- Imperative confirm / prompt ---------- */
 
+export interface DialogChoice {
+  value: string;
+  label: string;
+  /** Shown under the label, for the choice that needs the caveat. */
+  hint?: string;
+  danger?: boolean;
+  /**
+   * The safe answer, given the weight a dialog's confirm button has.
+   *
+   * A list of choices has no default until one is said to be, and the
+   * destructive one must not become it by being the only thing with a colour --
+   * which is what "Discard changes" was, on a guard whose whole purpose is to
+   * stop you losing work ([#175]).
+   *
+   * [#175]: https://github.com/Coffey-Labs/ihasmail/issues/175
+   */
+  primary?: boolean;
+}
+
 interface ConfirmRequest {
   id: number;
-  kind: "confirm" | "prompt";
+  kind: "confirm" | "prompt" | "choice";
   title: string;
   message?: ReactNode;
   confirmLabel?: string;
@@ -96,6 +116,7 @@ interface ConfirmRequest {
   danger?: boolean;
   defaultValue?: string;
   placeholder?: string;
+  choices?: DialogChoice[];
   resolve: (v: boolean | string | null) => void;
 }
 
@@ -119,6 +140,18 @@ export function promptDialog(opts: { title: string; message?: ReactNode; default
   });
 }
 
+/**
+ * A question with more than two answers, which "this one or all of them" is.
+ *
+ * Resolves to the chosen `value`, or `null` if the dialog is dismissed —
+ * dismissing is not one of the choices, so a caller cannot mistake it for one.
+ */
+export function choiceDialog(opts: { title: string; message?: ReactNode; choices: DialogChoice[]; cancelLabel?: string }): Promise<string | null> {
+  return new Promise((resolve) => {
+    useConfirmStore.getState().push({ id: reqId++, kind: "choice", ...opts, resolve: (v) => resolve(typeof v === "string" ? v : null) });
+  });
+}
+
 export function ConfirmHost() {
   const req = useConfirmStore((s) => s.queue[0]);
   const pop = useConfirmStore((s) => s.pop);
@@ -132,21 +165,37 @@ export function ConfirmHost() {
   return (
     <Dialog
       open
-      onClose={() => done(req.kind === "prompt" ? null : false)}
+      onClose={() => done(req.kind === "confirm" ? false : null)}
       title={req.title}
       size="sm"
       footer={
-        <>
-          <button className="btn" onClick={() => done(req.kind === "prompt" ? null : false)}>
+        req.kind === "choice" ? (
+          <button className="btn" onClick={() => done(null)}>
             {req.cancelLabel ?? "Cancel"}
           </button>
-          <button className={`btn ${req.danger ? "btn-danger" : "btn-primary"}`} onClick={() => done(req.kind === "prompt" ? value : true)}>
-            {req.confirmLabel ?? (req.kind === "prompt" ? "OK" : "Confirm")}
-          </button>
-        </>
+        ) : (
+          <>
+            <button className="btn" onClick={() => done(req.kind === "prompt" ? null : false)}>
+              {req.cancelLabel ?? "Cancel"}
+            </button>
+            <button className={`btn ${req.danger ? "btn-danger" : "btn-primary"}`} onClick={() => done(req.kind === "prompt" ? value : true)}>
+              {req.confirmLabel ?? (req.kind === "prompt" ? "OK" : "Confirm")}
+            </button>
+          </>
+        )
       }
     >
       {req.message && <p style={{ marginTop: 0 }}>{req.message}</p>}
+      {req.kind === "choice" && (
+        <div className="dialog-choices">
+          {req.choices?.map((c) => (
+            <button key={c.value} className={`btn dialog-choice ${c.primary ? "btn-primary" : ""} ${c.danger ? "danger" : ""}`} onClick={() => done(c.value)}>
+              <span>{c.label}</span>
+              {c.hint && <small>{c.hint}</small>}
+            </button>
+          ))}
+        </div>
+      )}
       {req.kind === "prompt" && (
         <form
           onSubmit={(e) => {

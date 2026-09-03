@@ -1,5 +1,8 @@
 import { create } from "zustand";
 import type { FolderRef } from "@/lib/sieveFolders";
+import { SPAM_HEADER_PROPS } from "@/lib/spamScore";
+import { groupByArchivePath, archivePath, type ArchiveGranularity } from "@/lib/archiveDate";
+import { isOptionalSort, withoutOptionalSorts } from "@/lib/listSort";
 import { JmapMethodError, chunk, client, setErrorMessage } from "@/jmap/client";
 import type {
   Comparator,
@@ -17,10 +20,14 @@ import type {
   Thread,
   VacationResponse,
   ChangesResponse,
+  Invocation,
 } from "@/jmap/types";
 import { toast } from "@/ui/toast";
 import { settings, useSettings } from "./settings";
 import { useSession } from "./session";
+import { mailboxDisplayName } from "@/lib/mailboxName";
+import { plural, t } from "@/lib/i18n";
+import { withBase } from "@/lib/basePath";
 
 /*
  * Named explicitly so `shareWith` comes back, which it does not otherwise --
@@ -87,6 +94,7 @@ export const FULL_PROPS = [
   "header:Auto-Submitted:asText",
   "header:Precedence:asText",
   "header:Authentication-Results:asText",
+  ...SPAM_HEADER_PROPS,
 ];
 
 export const BODY_PROPS = ["partId", "blobId", "size", "name", "type", "charset", "disposition", "cid", "language", "location", "subParts", "headers"];
@@ -124,6 +132,14 @@ export interface MailState {
   vacation: VacationResponse | null;
   list: ListState | null;
   selected: Record<Id, true>;
+  /** Unread messages per label keyword, for the sidebar. */
+  labelCounts: Record<string, number>;
+  /**
+   * The selection means "everything the current query matches", not the rows
+   * that happen to be loaded. Ticking the header box selects the loaded page;
+   * this is the deliberate second step past it.
+   */
+  selectedAll: boolean;
   anchorId: Id | null;
   loadingThreads: Record<Id, true>;
   lastSeenInboxEmailIds: Id[] | null;
@@ -153,6 +169,8 @@ export interface MailState {
   trash(ids: Id[]): Promise<void>;
   destroy(ids: Id[]): Promise<void>;
   archive(ids: Id[]): Promise<void>;
+  /** Archive into a dated subfolder of Archive, creating the folders as needed. */
+  archiveByDate(ids: Id[], granularity: ArchiveGranularity): Promise<void>;
   spam(ids: Id[], isSpam: boolean): Promise<void>;
   emptyMailbox(mailboxId: Id): Promise<void>;
   /** Mark every unread message in a mailbox read; optionally its subfolders too. */
@@ -160,7 +178,9 @@ export interface MailState {
   /** The mailbox plus all of its descendants. */
   descendantMailboxIds(mailboxId: Id): Id[];
 
-  createMailbox(name: string, parentId: Id | null): Promise<Id>;
+  createMailbox(name: string, parentId: Id | null, role?: MailboxRole): Promise<Id>;
+  /** Give something the Archive role -- adopting a folder already named for it, or making one. */
+  ensureArchiveFolder(): Promise<Id>;
   updateMailbox(id: Id, patch: Partial<Mailbox>): Promise<void>;
   destroyMailbox(id: Id, removeEmails?: boolean): Promise<void>;
 
@@ -176,7 +196,13 @@ export interface MailState {
 
   select(ids: Id[], on: boolean): void;
   clearSelection(): void;
+  /** Refresh the per-label unread counts, in one request. */
+  loadLabelCounts(): Promise<void>;
   selectAll(): void;
+  /** Extend the selection from the loaded rows to everything the query matches. */
+  selectAllMatching(): void;
+  /** Every id the current query matches, walked a page at a time. */
+  queryAllIds(): Promise<Id[]>;
   setAnchor(id: Id | null): void;
 
   applyChanges(types: Set<string>): Promise<void>;
@@ -188,6 +214,34 @@ function listKey(q: { filter: EmailFilter; sort: Comparator[]; collapseThreads: 
 }
 
 export const DEFAULT_SORT: Comparator[] = [{ property: "receivedAt", isAscending: false }];
+
+/**
+ * Nothing carries the Archive role, so offer to fix it rather than explain it.
+ *
+ * The message this replaces described the problem accurately and left the
+ * reader with nothing to do inside ihasmail -- roles were only ever shown, not
+ * set. `Mailbox/set` takes `role`, so the offer is real: one click makes the
+ * folder and files the messages that were being archived when it was missing.
+ *
+ * `retry` is the archiving that could not happen, handed back so the click
+ * finishes the job rather than leaving someone to select the same messages
+ * again.
+ */
+function offerArchiveFolder(retry: () => Promise<void>): void {
+  toast.error(t("No Archive folder is set yet."), {
+    action: {
+      label: t("Create one"),
+      onClick: async () => {
+        try {
+          await useMail.getState().ensureArchiveFolder();
+          await retry();
+        } catch (err) {
+          toast.error(t("Could not set up an Archive folder: {error}", { error: (err as Error).message }));
+        }
+      },
+    },
+  });
+}
 
 export const useMail = create<MailState>((set, get) => ({
   accountId: null,
@@ -203,6 +257,8 @@ export const useMail = create<MailState>((set, get) => ({
   vacation: null,
   list: null,
   selected: {},
+  labelCounts: {},
+  selectedAll: false,
   anchorId: null,
   loadingThreads: {},
   lastSeenInboxEmailIds: null,
@@ -228,6 +284,7 @@ export const useMail = create<MailState>((set, get) => ({
       vacation: null,
       list: null,
       selected: {},
+      selectedAll: false,
       anchorId: null,
       lastSeenInboxEmailIds: null,
     });
@@ -240,6 +297,11 @@ export const useMail = create<MailState>((set, get) => ({
     const mailboxes: Record<Id, Mailbox> = {};
     for (const m of res.list) mailboxes[m.id] = m;
     set({ mailboxes, mailboxState: res.state, mailboxesLoaded: true });
+    // Label counts move for the same reasons folder counts do -- something was
+    // read, moved or deleted -- so they are refreshed on the same beat rather
+    // than on a timer of their own. Not awaited: the folder tree should not
+    // wait on decoration.
+    void get().loadLabelCounts();
   },
 
   roleId(role) {
@@ -279,6 +341,7 @@ export const useMail = create<MailState>((set, get) => ({
     set({
       list: { ...q, key, ids: reuse ? cur.ids : [], total: reuse ? cur.total : 0, queryState: null, loading: true, loadingMore: false, error: null, exhausted: false },
       selected: {},
+      selectedAll: false,
       anchorId: null,
     });
     try {
@@ -439,7 +502,7 @@ export const useMail = create<MailState>((set, get) => ({
     try {
       await setEmails(accountId, update);
     } catch (err) {
-      toast.error(`Could not update: ${(err as Error).message}`);
+      toast.error(t("Could not update: {error}", { error: (err as Error).message }));
       void get().getEmails(ids);
     }
   },
@@ -458,8 +521,18 @@ export const useMail = create<MailState>((set, get) => ({
     const { emails, mailboxes } = get();
     const prev: Record<Id, Record<Id, boolean>> = {};
     const update: Record<Id, Record<string, unknown>> = {};
+    /*
+     * Undo restores the folders each message was in, which can only be offered
+     * for messages we actually hold. Selecting a whole folder reaches messages
+     * that were never loaded, and an Undo built from those would write an empty
+     * mailboxIds -- putting the message in no folder at all, which is worse
+     * than the move it was undoing. So the offer is withheld rather than
+     * quietly restoring something wrong.
+     */
+    let undoable = true;
     for (const id of ids) {
       const e = emails[id];
+      if (!e) undoable = false;
       prev[id] = e?.mailboxIds ?? {};
       update[id] = { mailboxIds: { [toMailboxId]: true } };
     }
@@ -467,7 +540,7 @@ export const useMail = create<MailState>((set, get) => ({
     set((s) => {
       const next = { ...s.emails };
       for (const id of ids) if (next[id]) next[id] = { ...next[id]!, mailboxIds: { [toMailboxId]: true } };
-      return { emails: next, selected: {} };
+      return { emails: next, selected: {}, selectedAll: false };
     });
     removeFromList(ids, set, get, toMailboxId);
     try {
@@ -478,9 +551,11 @@ export const useMail = create<MailState>((set, get) => ({
         // moved to "Trash" or "Spam" on a server whose folders are called
         // "Deleted Items" and "Junk Mail" -- naming somewhere that does not
         // exist, in the one message whose job is saying where it went.
-        const name = mailboxes[toMailboxId]?.name ?? opts.label ?? "folder";
+        // Through the display name, so the message names the folder the reader
+        // is looking at in the sidebar rather than the server's own word for it.
+        const name = mailboxDisplayName(mailboxes[toMailboxId]) || opts.label || t("folder");
         toast.show(`${ids.length === 1 ? "Conversation" : `${ids.length} conversations`} moved to ${name}`, {
-          action: {
+          action: !undoable ? undefined : {
             label: "Undo",
             onClick: async () => {
               const undo: Record<Id, Record<string, unknown>> = {};
@@ -499,7 +574,7 @@ export const useMail = create<MailState>((set, get) => ({
       }
       void get().loadMailboxes();
     } catch (err) {
-      toast.error(`Move failed: ${(err as Error).message}`);
+      toast.error(t("Move failed: {error}", { error: (err as Error).message }));
       void get().getEmails(ids);
       void get().refreshList();
     }
@@ -526,7 +601,7 @@ export const useMail = create<MailState>((set, get) => ({
       await setEmails(accountId, update);
       void get().loadMailboxes();
     } catch (err) {
-      toast.error(`Could not update labels: ${(err as Error).message}`);
+      toast.error(t("Could not update labels: {error}", { error: (err as Error).message }));
       void get().getEmails(ids);
     }
   },
@@ -548,16 +623,16 @@ export const useMail = create<MailState>((set, get) => ({
     set((s) => {
       const next = { ...s.emails };
       for (const id of ids) delete next[id];
-      return { emails: next, selected: {} };
+      return { emails: next, selected: {}, selectedAll: false };
     });
     try {
       const { notDestroyed } = await destroyEmails(accountId, ids);
       const failed = Object.keys(notDestroyed);
-      if (failed.length) toast.error(`${failed.length} message(s) could not be deleted`);
+      if (failed.length) toast.error(plural(failed.length, { one: "{n} message could not be deleted", other: "{n} messages could not be deleted" }));
       else toast.show(`${ids.length === 1 ? "Message" : `${ids.length} messages`} deleted forever`);
       void get().loadMailboxes();
     } catch (err) {
-      toast.error(`Delete failed: ${(err as Error).message}`);
+      toast.error(t("Delete failed: {error}", { error: (err as Error).message }));
       void get().refreshList();
     }
   },
@@ -565,10 +640,76 @@ export const useMail = create<MailState>((set, get) => ({
   async archive(ids) {
     const archiveId = get().roleId("archive") ?? get().roleId("all");
     if (!archiveId) {
-      toast.error("No Archive folder found. Create one named “Archive” first.");
+      offerArchiveFolder(() => get().archive(ids));
       return;
     }
     await get().move(ids, archiveId, { label: "Archive" });
+  },
+
+  async archiveByDate(ids, granularity) {
+    const accountId = get().accountId;
+    const archiveId = get().roleId("archive") ?? get().roleId("all");
+    if (!accountId || !ids.length) return;
+    if (!archiveId) {
+      offerArchiveFolder(() => get().archiveByDate(ids, granularity));
+      return;
+    }
+    const { emails } = get();
+    const groups = groupByArchivePath(ids.map((id) => ({ id, receivedAt: emails[id]?.receivedAt })), granularity);
+
+    // Where everything came from, captured before anything moves, so one Undo
+    // can put back a selection that went to several folders.
+    const prev: Record<Id, Record<Id, boolean>> = {};
+    // See the note in move(): an Undo for a message we never loaded would
+    // write an empty mailboxIds, so it is not offered at all.
+    let undoable = true;
+    for (const id of ids) {
+      if (!emails[id]) undoable = false;
+      prev[id] = emails[id]?.mailboxIds ?? {};
+    }
+
+    const moved: string[] = [];
+    try {
+      for (const group of groups) {
+        const target = await ensureFolderPath(get, archiveId, group.segments);
+        // Silent: each group would otherwise raise its own toast with its own
+        // Undo, and undoing one third of a move is not what anybody meant.
+        await get().move(group.ids, target, { silent: true });
+        moved.push(group.segments.length ? `Archive/${archivePath(group.segments)}` : "Archive");
+      }
+    } catch (err) {
+      toast.error(t("Archive failed: {error}", { error: (err as Error).message }));
+      void get().getEmails(ids);
+      void get().refreshList();
+      return;
+    }
+
+    // One message naming every destination, because a selection that split
+    // across months should say so rather than claiming a single folder.
+    const where = moved.length === 1 ? moved[0]! : t("{count} folders", { count: String(moved.length) });
+    toast.show(
+      ids.length === 1
+        ? t("Conversation moved to {folder}", { folder: where })
+        : t("{count} conversations moved to {folder}", { count: String(ids.length), folder: where }),
+      {
+        action: !undoable ? undefined : {
+          label: "Undo",
+          onClick: async () => {
+            const undo: Record<Id, Record<string, unknown>> = {};
+            for (const id of ids) undo[id] = { mailboxIds: prev[id] };
+            await setEmails(accountId, undo);
+            set((st) => {
+              const next = { ...st.emails };
+              for (const id of ids) if (next[id]) next[id] = { ...next[id]!, mailboxIds: prev[id]! };
+              return { emails: next };
+            });
+            void get().refreshList();
+            void get().loadMailboxes();
+          },
+        },
+      },
+    );
+    void get().loadMailboxes();
   },
 
   async spam(ids, isSpam) {
@@ -598,7 +739,7 @@ export const useMail = create<MailState>((set, get) => ({
     // there is no point routing spam through the bin on its way out, and it is
     // what "delete all spam" means everywhere else. The dialogs say so.
     if (mailboxId !== get().roleId("trash") && mailboxId !== get().roleId("junk")) {
-      toast.error("Only Deleted Items and Junk Mail can be emptied.");
+      toast.error(t("Only Deleted Items and Junk Mail can be emptied."));
       return;
     }
     // A folder can hold far more messages than the server will destroy in one
@@ -613,7 +754,7 @@ export const useMail = create<MailState>((set, get) => ({
         const q = await client.call<QueryResponse>("Email/query", { accountId, filter: { inMailbox: mailboxId }, limit: page });
         if (!q.ids.length) break;
         if (progress === null && (q.total ?? q.ids.length) > page) {
-          progress = toast.show("Emptying folder…", { duration: 0 });
+          progress = toast.show(t("Emptying folder…"), { duration: 0 });
         }
         const { destroyed, notDestroyed } = await destroyEmails(accountId, q.ids);
         deleted += destroyed.length;
@@ -624,10 +765,11 @@ export const useMail = create<MailState>((set, get) => ({
           throw new Error(err ? setErrorMessage(err) : "the server refused to delete these messages");
         }
       }
-      toast.show(`Deleted ${deleted} message${deleted === 1 ? "" : "s"}`);
+      toast.show(plural(deleted, { one: "Deleted {n} message", other: "Deleted {n} messages" }));
       set({ list: get().list ? { ...get().list!, ids: get().list!.mailboxId === mailboxId ? [] : get().list!.ids, total: 0 } : null });
     } catch (err) {
-      toast.error(`Could not empty folder: ${(err as Error).message}${deleted ? ` (${deleted} deleted first)` : ""}`);
+      toast.error(t("Could not empty folder: {error}", { error: (err as Error).message })
+        + (deleted ? " " + plural(deleted, { one: "({n} deleted first)", other: "({n} deleted first)" }) : ""));
     } finally {
       if (progress !== null) toast.dismiss(progress);
       void get().loadMailboxes();
@@ -684,23 +826,57 @@ export const useMail = create<MailState>((set, get) => ({
         marked += ids.length;
       }
       if (!marked) {
-        toast.show("Nothing unread here");
+        toast.show(t("Nothing unread here"));
         return;
       }
-      toast.success(`Marked ${marked} message${marked === 1 ? "" : "s"} as read${includeChildren && boxes.length > 1 ? ` in ${boxes.length} folders` : ""}`);
+      toast.success(
+        plural(marked, { one: "Marked {n} message as read", other: "Marked {n} messages as read" })
+        + (includeChildren && boxes.length > 1 ? " " + plural(boxes.length, { one: "in {n} folder", other: "in {n} folders" }) : ""),
+      );
       void get().loadMailboxes();
     } catch (err) {
-      toast.error(`Could not mark as read: ${(err as Error).message}`);
+      toast.error(t("Could not mark as read: {error}", { error: (err as Error).message }));
     }
   },
 
-  async createMailbox(name, parentId) {
+  async createMailbox(name, parentId, role) {
     const accountId = get().accountId!;
-    const res = await client.call<SetResponse<Mailbox>>("Mailbox/set", { accountId, create: { n: { name, parentId, isSubscribed: true } } });
+    const n: Record<string, unknown> = { name, parentId, isSubscribed: true };
+    // Only when asked. Sending `role: null` on every create would be harmless
+    // and would still say something the caller did not.
+    if (role) n.role = role;
+    const res = await client.call<SetResponse<Mailbox>>("Mailbox/set", { accountId, create: { n } });
     const err = res.notCreated?.n;
     if (err) throw new Error(setErrorMessage(err));
     await get().loadMailboxes();
     return res.created!.n!.id;
+  },
+
+  /*
+   * The Archive folder, made rather than described.
+   *
+   * `Mailbox/set` takes `role` -- confirmed live against 0.16.20 on 2026-09-02,
+   * as an ordinary user through the proxy, no admin API -- so a missing Archive
+   * is something ihasmail can fix instead of explaining a server-side concept
+   * and leaving. Stalwart parses the role names in `SpecialUse::parse`, of
+   * which "archive" is one, and enforces that a role is held by one folder.
+   *
+   * A folder already *named* Archive but carrying no role is adopted rather
+   * than duplicated. That is exactly the state #217 was reported from -- a
+   * folder with the right name and no role, which archiving could not see --
+   * and creating a second Archive beside it would be its own confusion.
+   *
+   * The name is the server's, not a translated one, for the same reason
+   * renaming writes back the server's own: a folder's name is data, and a
+   * German session must not create "Archiv" that an English one cannot find.
+   */
+  async ensureArchiveFolder() {
+    const existing = Object.values(get().mailboxes).find((m) => !m.role && m.name.trim().toLowerCase() === "archive");
+    if (existing) {
+      await get().updateMailbox(existing.id, { role: "archive" });
+      return existing.id;
+    }
+    return get().createMailbox("Archive", null, "archive");
   },
 
   async updateMailbox(id, patch) {
@@ -816,15 +992,98 @@ export const useMail = create<MailState>((set, get) => ({
       return { selected: next };
     });
   },
+  async loadLabelCounts() {
+    const accountId = get().accountId;
+    const labels = settings().labels;
+    if (!accountId || !labels.length) {
+      if (Object.keys(get().labelCounts).length) set({ labelCounts: {} });
+      return;
+    }
+    /*
+     * One request carrying a query per label, rather than a request each. The
+     * count is the whole answer, so `limit: 0` keeps the server from sending
+     * ids that would only be thrown away -- what is wanted is `total`.
+     */
+    const calls: Invocation[] = labels.map((l, i) => [
+      "Email/query",
+      {
+        accountId,
+        filter: { operator: "AND", conditions: [{ hasKeyword: l.keyword }, { notKeyword: "$seen" }] },
+        limit: 0,
+        calculateTotal: true,
+      },
+      `c${i}`,
+    ]);
+    try {
+      const res = await client.request(calls);
+      const counts: Record<string, number> = {};
+      for (const [, result, id] of res.methodResponses) {
+        const label = labels[Number(String(id).slice(1))];
+        if (!label) continue;
+        counts[label.keyword] = (result as { total?: number }).total ?? 0;
+      }
+      set({ labelCounts: counts });
+    } catch {
+      // A count is decoration. Failing to get one is not worth a toast, and
+      // the sidebar falls back to drawing the label without a number.
+    }
+  },
+
   clearSelection() {
-    set({ selected: {} });
+    set({ selected: {}, selectedAll: false });
   },
   selectAll() {
     const l = get().list;
     if (!l) return;
     const next: Record<Id, true> = {};
     for (const id of l.ids) next[id] = true;
-    set({ selected: next });
+    // Ticking the box is the loaded rows. Going wider is a separate,
+    // deliberate press, because "select all" meaning ten thousand messages
+    // when the screen shows fifty is not something to infer from a checkbox.
+    set({ selected: next, selectedAll: false });
+  },
+
+  selectAllMatching() {
+    if (!get().list) return;
+    set({ selectedAll: true });
+  },
+
+  async queryAllIds() {
+    const { accountId, list } = get();
+    if (!accountId || !list) return [];
+    const page = client.maxObjectsInSet;
+    const out: Id[] = [];
+    let progress: number | null = null;
+    try {
+      for (let position = 0; ; position += page) {
+        const q = await client.call<QueryResponse>("Email/query", {
+          accountId,
+          filter: list.filter,
+          sort: list.sort,
+          /*
+           * Uncollapsed, unlike the list itself. "Everything in this folder"
+           * means every message; the list shows one row per thread only so it
+           * reads well. Expanding threads the way a click does is not possible
+           * here anyway -- that walks loaded Email objects, and the whole point
+           * is the ones that were never loaded.
+           */
+          collapseThreads: false,
+          position,
+          limit: page,
+        });
+        if (!q.ids.length) break;
+        out.push(...q.ids);
+        if (progress === null && q.ids.length === page) {
+          progress = toast.show(t("Working out what is selected…"), { duration: 0 });
+        }
+        // A short page is the last page. Asking again would cost a round trip
+        // to be told the same thing.
+        if (q.ids.length < page) break;
+      }
+    } finally {
+      if (progress !== null) toast.dismiss(progress);
+    }
+    return out;
   },
   setAnchor(id) {
     set({ anchorId: id });
@@ -932,7 +1191,45 @@ function sortIdentities(list: Identity[], accountId: Id): Identity[] {
   return [...list].sort((a, b) => (a.id === pref ? -1 : b.id === pref ? 1 : a.email.localeCompare(b.email)));
 }
 
+/**
+ * Sort properties a server has already refused, so it is asked once and not
+ * once per folder for the rest of the session.
+ *
+ * Keyed by nothing: a refusal is about the server, and there is only one.
+ */
+let sortRefused = false;
+
 async function runQuery(accountId: Id, q: ListQuery, position: number, limit: number) {
+  /*
+   * `hasKeyword` is an optional sort in RFC 8621, and a server that will not
+   * do it fails the whole query rather than degrading it -- so "unread first"
+   * on such a server means a folder that does not open at all, which is a
+   * worse outcome than one in the wrong order.
+   *
+   * The refusal is caught once, the optional levels dropped, and the query
+   * retried. Nothing is said the first time: the reader asked for an order and
+   * got the closest the server can give, and a toast on every folder change
+   * would be the app complaining about its own request.
+   */
+  const query = sortRefused ? { ...q, sort: withoutOptionalSorts(q.sort) } : q;
+  try {
+    return await runQueryOnce(accountId, query, position, limit);
+  } catch (err) {
+    const optional = query.sort.some(isOptionalSort);
+    if (!optional || !isUnsupportedSort(err)) throw err;
+    sortRefused = true;
+    return await runQueryOnce(accountId, { ...q, sort: withoutOptionalSorts(q.sort) }, position, limit);
+  }
+}
+
+/** The error a server raises for a sort property it does not implement. */
+function isUnsupportedSort(err: unknown): boolean {
+  const type = (err as { type?: string } | null)?.type;
+  const message = String((err as Error | null)?.message ?? "");
+  return type === "unsupportedSort" || /unsupportedSort/i.test(message);
+}
+
+async function runQueryOnce(accountId: Id, q: ListQuery, position: number, limit: number) {
   const calls: Array<[string, Record<string, unknown>, string]> = [
     ["Email/query", { accountId, filter: q.filter, sort: q.sort, collapseThreads: q.collapseThreads, position, limit, calculateTotal: true }, "q"],
     ["Email/get", { accountId, "#ids": { resultOf: "q", name: "Email/query", path: "/ids" }, properties: LIST_PROPS }, "e"],
@@ -1033,7 +1330,10 @@ async function notifyNewMail(created: Id[], get: () => MailState) {
         tag: e.id,
         onClick: () => {
           window.location.hash = "";
-          window.history.pushState({}, "", `/mail/${inbox}/${e.threadId}`);
+          // The one navigation that does not go through wouter -- it is
+          // synthesising a popstate so the router picks the address up -- so
+          // it is also the one that has to add the mount prefix itself.
+          window.history.pushState({}, "", withBase(`/mail/${inbox}/${e.threadId}`));
           window.dispatchEvent(new PopStateEvent("popstate"));
         },
       });
@@ -1072,6 +1372,27 @@ export function mailboxIcon(role: MailboxRole): string {
 }
 
 export const ROLE_ORDER: Record<string, number> = { inbox: 0, flagged: 1, important: 2, drafts: 3, sent: 4, archive: 5, all: 6, junk: 7, trash: 8 };
+
+/**
+ * Resolve `parentId/segments...` to a mailbox id, creating what is missing.
+ *
+ * Reuses a folder that is already there rather than making a second one beside
+ * it, so archiving by month twice in the same month files into the same place
+ * -- including a folder somebody made by hand, or one another client made
+ * first, which is the usual way `Archive/2026` already exists.
+ *
+ * Sequential on purpose: each level is the next level's parent, and
+ * `createMailbox` reloads the tree, so the lookup for `09` can see the `2026`
+ * that was just created.
+ */
+async function ensureFolderPath(state: () => MailState, parentId: Id, segments: string[]): Promise<Id> {
+  let current = parentId;
+  for (const name of segments) {
+    const existing = Object.values(state().mailboxes).find((m) => m.parentId === current && m.name === name);
+    current = existing ? existing.id : await state().createMailbox(name, current);
+  }
+  return current;
+}
 
 /**
  * A folder and everything under it, with the paths they have right now.
@@ -1137,6 +1458,6 @@ async function followFolders(before: FolderRef[]): Promise<void> {
     toast.show(said.join(" · "), { duration: 8000 });
   } catch (err) {
     const { toast } = await import("@/ui/toast");
-    toast.error(`Folder changed, but its filter rules could not be updated: ${(err as Error).message}`);
+    toast.error(t("Folder changed, but its filter rules could not be updated: {error}", { error: (err as Error).message }));
   }
 }

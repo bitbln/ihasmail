@@ -22,8 +22,18 @@ const PREFIX = "ihasmail:";
  * - `deviceTrusted` is how the next boot knows to read at all.
  * - `pushDeviceId` is a random id for this browser, so re-subscribing replaces
  *   rather than accumulates. The subscription itself is removed on sign-out.
+ * - `pushEnabled` records that background notifications were switched on here,
+ *   and is what the renewal on app start keys off. It is kept because this
+ *   function runs on two different endings and only one of them is a sign-out:
+ *   a *deploy* expires every session, and the handler for that clears local
+ *   data without removing the push subscription, because there is no longer a
+ *   session to remove it with. Dropping the flag there would leave the
+ *   subscription registered, the switch still reading as on, and nothing
+ *   renewing it -- so push would go quiet a week after every deploy, which is
+ *   the exact failure the renewal exists to prevent. Signing out for real
+ *   clears it directly, in `unsubscribeThisDevice`, alongside the subscription.
  */
-const KEEP_ON_SIGN_OUT = ["lastUser", "deviceTrusted", "pushDeviceId"];
+const KEEP_ON_SIGN_OUT = ["lastUser", "deviceTrusted", "pushDeviceId", "pushEnabled"];
 
 const TRUST_KEY = `${PREFIX}deviceTrusted`;
 
@@ -94,6 +104,25 @@ export function loadJson<T>(key: string, fallback: T): T {
     return { ...fallback, ...(JSON.parse(raw) as T) };
   } catch {
     return fallback;
+  }
+}
+
+/**
+ * Did `loadJson` have something to return, or did it hand back the fallback?
+ *
+ * The difference decides whether a first paint is worth anything. With a
+ * cached value the screen can be right immediately and the account's copy only
+ * has to correct it; without one -- an untrusted device, or the sign-out that
+ * every deploy causes -- the first paint is the defaults, and painting it
+ * before the account's settings arrive shows English to somebody who chose
+ * otherwise.
+ */
+export function hasCachedJson(key: string): boolean {
+  if (!trusted) return false;
+  try {
+    return localStorage.getItem(PREFIX + key) != null;
+  } catch {
+    return false;
   }
 }
 

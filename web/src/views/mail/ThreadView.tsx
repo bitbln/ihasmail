@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertOctagon, Archive, ArrowLeft, ChevronDown, ChevronUp, FolderInput, Forward, Mail, MailOpen, MoreVertical, Printer, Reply, ReplyAll, ShieldCheck, Star, Tag, Trash2, Download } from "lucide-react";
+import { AlertOctagon, Archive, ArrowLeft, ChevronDown, ChevronUp, FolderInput, Forward, Mail, MailOpen, MailPlus, MoreVertical, Printer, Reply, ReplyAll, ShieldCheck, Star, Tag, Trash2, Download , Paperclip} from "lucide-react";
 import { useMail } from "@/store/mail";
 import { useSettings } from "@/store/settings";
 import { useCompose } from "@/store/compose";
@@ -7,10 +7,12 @@ import type { Email, Id } from "@/jmap/types";
 import { MessageView } from "./MessageView";
 import type { ListActions } from "./MessageList";
 import { MenuItem, MenuSep, Popover, useMenu } from "@/ui/popover";
-import { Spinner } from "@/ui/misc";
+import { Spinner, useIsNarrow, useIsTouch } from "@/ui/misc";
 import { client } from "@/jmap/client";
 import { LabelPicker } from "./LabelPicker";
 import { threadScrollTarget } from "@/lib/threadScroll";
+import { useEdgeBack } from "@/lib/touch";
+import { plural, t } from "@/lib/i18n";
 
 /** How long the opening scroll keeps its place while bodies and images land. */
 const HOLD_MS = 2000;
@@ -40,8 +42,22 @@ export function ThreadView({ threadId, mailboxId, onBack, actions, onNavigate, h
   const [allExpanded, setAllExpanded] = useState(false);
   const [labelAnchor, setLabelAnchor] = useState<{ x: number; y: number } | null>(null);
   const moreMenu = useMenu();
+  /** The overflow on the reply strip, which is the only per-message menu a phone offers easily. */
+  const replyMore = useMenu();
   const scrollRef = useRef<HTMLDivElement>(null);
   const markTimer = useRef<number | null>(null);
+  const isTouch = useIsTouch();
+  const narrow = useIsNarrow();
+  /*
+   * Drag in from the left edge to go back to the list.
+   *
+   * Only where back means something: on a wide screen the list is still
+   * beside the conversation and there is nowhere to go. The toolbar's arrow
+   * stays regardless — a gesture with no visible control is a gesture only
+   * the people who already know about it can use.
+   */
+  const [viewEl, setViewEl] = useState<HTMLDivElement | null>(null);
+  useEdgeBack(viewEl, onBack, isTouch && narrow);
 
   // Load
   useEffect(() => {
@@ -215,38 +231,38 @@ export function ThreadView({ threadId, mailboxId, onBack, actions, onNavigate, h
   const accountId = useMail((s) => s.accountId);
 
   return (
-    <div className="thread-view">
+    <div className="thread-view" ref={setViewEl}>
       <div className="thread-toolbar">
-        <button className="icon-btn" onClick={onBack} aria-label="Back to list" title="Back (u)">
+        <button className="icon-btn" onClick={onBack} aria-label={t("Back to list")} title={t("Back (u)")}>
           <ArrowLeft size={20} />
         </button>
-        <button className="icon-btn" title="Archive (e)" onClick={() => void actions.archive(rowIds)}><Archive size={19} /></button>
+        <button className="icon-btn" title={t("Archive (e)")} onClick={() => void actions.archive(rowIds)}><Archive size={19} /></button>
         <button className="icon-btn" title={inJunk ? "Not spam" : "Report spam (!)"} onClick={() => void actions.spam(rowIds)}>{inJunk ? <ShieldCheck size={19} /> : <AlertOctagon size={19} />}</button>
-        <button className="icon-btn" title="Delete (#)" onClick={() => void actions.trash(rowIds)}><Trash2 size={19} /></button>
+        <button className="icon-btn" title={t("Delete (#)")} onClick={() => void actions.trash(rowIds)}><Trash2 size={19} /></button>
         <span className="tb-sep hide-mobile" />
         <button className="icon-btn hide-mobile" title={anyUnread ? "Mark as read" : "Mark as unread"} onClick={() => void actions.read(anyUnread, rowIds)}>{anyUnread ? <MailOpen size={19} /> : <Mail size={19} />}</button>
-        <button className="icon-btn hide-mobile" title="Move to (v)" onClick={() => actions.move(rowIds)}><FolderInput size={19} /></button>
-        <button className="icon-btn hide-mobile" title="Labels (l)" onClick={(e) => setLabelAnchor({ x: e.clientX, y: e.clientY })}><Tag size={19} /></button>
-        <button className="icon-btn" onClick={moreMenu.open} aria-label="More"><MoreVertical size={19} /></button>
+        <button className="icon-btn hide-mobile" title={t("Move to (v)")} onClick={() => actions.move(rowIds)}><FolderInput size={19} /></button>
+        <button className="icon-btn hide-mobile" title={t("Labels (l)")} onClick={(e) => setLabelAnchor({ x: e.clientX, y: e.clientY })}><Tag size={19} /></button>
+        <button className="icon-btn" onClick={moreMenu.open} aria-label={t("More")}><MoreVertical size={19} /></button>
         <Popover anchor={moreMenu.anchor} onClose={moreMenu.close} align="start" width={240}>
           <MenuItem icon={<Star size={16} />} label={anyStarred ? "Remove star" : "Add star"} onClick={() => void actions.star(!anyStarred, rowIds)} />
-          <MenuItem icon={<Tag size={16} />} label="Label…" onClick={() => setLabelAnchor({ x: window.innerWidth / 2, y: 100 })} />
+          <MenuItem icon={<Tag size={16} />} label={t("Label…")} onClick={() => setLabelAnchor({ x: window.innerWidth / 2, y: 100 })} />
           <MenuItem icon={allExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />} label={allExpanded ? "Collapse all" : "Expand all"} onClick={() => { setAllExpanded((v) => !v); setExpanded({}); }} />
           <MenuSep />
-          <MenuItem icon={<Printer size={16} />} label="Print conversation" onClick={() => window.print()} />
+          <MenuItem icon={<Printer size={16} />} label={t("Print conversation")} onClick={() => window.print()} />
           {last && accountId && (
-            <MenuItem icon={<Download size={16} />} label="Download latest as .eml" onClick={() => { const a = document.createElement("a"); a.href = client.downloadUrl(accountId, last.blobId, `${(last.subject || "message").replace(/[^\w.-]+/g, "_")}.eml`, "message/rfc822"); a.download = ""; a.click(); }} />
+            <MenuItem icon={<Download size={16} />} label={t("Download latest as .eml")} onClick={() => { const a = document.createElement("a"); a.href = client.downloadUrl(accountId, last.blobId, `${(last.subject || "message").replace(/[^\w.-]+/g, "_")}.eml`, "message/rfc822"); a.download = ""; a.click(); }} />
           )}
         </Popover>
         <div className="thread-nav hide-mobile">
-          <button className="icon-btn sm" disabled={!hasPrev} onClick={() => onNavigate(-1)} title="Newer (k)"><ChevronUp size={18} /></button>
-          <button className="icon-btn sm" disabled={!hasNext} onClick={() => onNavigate(1)} title="Older (j)"><ChevronDown size={18} /></button>
+          <button className="icon-btn sm" disabled={!hasPrev} onClick={() => onNavigate(-1)} title={t("Newer (k)")}><ChevronUp size={18} /></button>
+          <button className="icon-btn sm" disabled={!hasNext} onClick={() => onNavigate(1)} title={t("Older (j)")}><ChevronDown size={18} /></button>
         </div>
       </div>
       <div className="thread-scroll" ref={scrollRef}>
         <div className="thread-subject">
           <div className="grow">
-            <h1>{subject}</h1>
+            <h1 className="notranslate" translate="no">{subject}</h1>
             {(threadLabels.length > 0 || threadMailboxes.length > 0) && (
               <div className="labels">
                 {threadMailboxes.map((n) => <span key={n} className="chip">{n}</span>)}
@@ -254,10 +270,10 @@ export function ThreadView({ threadId, mailboxId, onBack, actions, onNavigate, h
               </div>
             )}
           </div>
-          {messages.length > 1 && <span className="muted small nowrap" style={{ marginTop: 6 }}>{messages.length} messages</span>}
+          {messages.length > 1 && <span className="muted small nowrap" style={{ marginTop: 6 }}>{plural(messages.length, { one: "{n} message", other: "{n} messages" })}</span>}
         </div>
         {error && <div className="error-box" style={{ margin: 16 }}>{error}</div>}
-        {loading && !messages.length && <Spinner label="Loading conversation…" />}
+        {loading && !messages.length && <Spinner label={t("Loading conversation…")} />}
         {messages.map((e, i) => (
           <MessageView
             key={e.id}
@@ -272,9 +288,23 @@ export function ThreadView({ threadId, mailboxId, onBack, actions, onNavigate, h
         {last && (
           <div className="reply-box">
             <div className="reply-prompt">
-              <button onClick={() => void reply(last, "reply")}><Reply size={16} /> Reply</button>
-              <button onClick={() => void reply(last, "replyAll")}><ReplyAll size={16} /> Reply all</button>
-              <button onClick={() => void reply(last, "forward")}><Forward size={16} /> Forward</button>
+              <button onClick={() => void reply(last, "reply")}><Reply size={16} />  {t("Reply")}</button>
+              <button onClick={() => void reply(last, "replyAll")}><ReplyAll size={16} />  {t("Reply all")}</button>
+              <button onClick={() => void reply(last, "forward")}><Forward size={16} />  {t("Forward")}</button>
+              {/*
+                On a phone this strip is where a thumb goes, and the per-message
+                menu at the top of a card is not somewhere anybody looks for
+                "send this again" -- which is how compose-as-new came to be
+                reported missing on mobile when it was there all along (#181).
+                A fourth full button does not fit at 500px; this does, and it
+                spells the action out once opened.
+              */}
+              <span className="spacer" />
+              <button className="icon-btn" onClick={replyMore.open} aria-label={t("More ways to send this")}><MoreVertical size={18} /></button>
+              <Popover anchor={replyMore.anchor} onClose={replyMore.close} align="end" width={220}>
+                <MenuItem icon={<Paperclip size={16} />} label={t("Forward as attachment")} onClick={() => useCompose.getState().forwardAsAttachment(last)} />
+                <MenuItem icon={<MailPlus size={16} />} label={t("Compose as new")} onClick={() => void useCompose.getState().composeAsNew(last)} />
+              </Popover>
             </div>
           </div>
         )}
