@@ -3,7 +3,7 @@ import { accountKey, loadRaw, saveJson } from "@/lib/storage";
 import { CAP, chunk, client, setErrorMessage } from "@/jmap/client";
 import type { AddressBook, ContactCard, EmailAddress, GetResponse, Id, Principal, QueryResponse, SetError, SetResponse } from "@/jmap/types";
 import { contactDisplayName, contactEmails, sortKey } from "@/lib/contacts";
-import { parseLdif } from "@/lib/ldif";
+import { parseLdif, uidFromDn } from "@/lib/ldif";
 import { cardFromLdif } from "@/lib/mozillaAb";
 import { useSettings } from "./settings";
 import { useSession } from "./session";
@@ -73,14 +73,14 @@ async function scanBook(accountId: Id, addressBookId: Id): Promise<{ byUid: Map<
  * wrong in both directions: two colleagues who share a name and a shared alias
  * collapse into one, and somebody whose address changed since the last export
  * looks like a stranger. Either mistake is silent and one of them is
- * unrecoverable, which is why #223 leaves the decision open.
+ * unrecoverable, so it counts and never acts.
  *
- * Counting is a different act from acting. An LDIF re-import duplicates
- * everything -- Mozilla's schema has no UID, so the import invents one and
- * nothing can match -- and the reported harm was confusion rather than data
- * loss: somebody imports a file twice and cannot tell what happened. Being told
- * "40 of these look like contacts you already had" answers that without
- * touching a single card.
+ * What is left for it to count, now that an LDIF re-import matches on the
+ * entry's `dn`, is the entries that matching could not catch: one whose `dn`
+ * moved between exports, and anything imported before there was a `dn` to match
+ * on. Those arrive as new cards, and saying "40 of these look like contacts you
+ * already had" is the honest half of the answer -- the reported harm was
+ * confusion rather than duplication, and being told costs nothing.
  *
  * One key per address, so a person whose second address matches is still
  * recognised.
@@ -202,7 +202,21 @@ interface ContactsState {
   filterCards(cards: ContactCard[], text: string): ContactCard[];
   createCard(card: Partial<ContactCard>, addressBookId: Id): Promise<Id>;
   updateCard(id: Id, patch: Record<string, unknown>): Promise<void>;
-  destroyCards(ids: Id[]): Promise<void>;
+  /**
+   * Delete cards outright, reporting what the server actually destroyed rather
+   * than what was asked for. Nothing is thrown for a refusal -- a partial one
+   * has a count worth telling somebody about, and `refused` says why the rest
+   * did not go.
+   */
+  destroyCards(ids: Id[]): Promise<{ destroyed: number; refused?: SetError }>;
+  /**
+   * Empty an address book: everything filed in it, gone.
+   *
+   * `unfiled` is the part that is not a deletion. A card filed in two books is
+   * only *this* book's to remove, so it is taken out of this one and left
+   * alone in the other -- destroying it would empty a book nobody asked about.
+   */
+  emptyBook(bookId: Id): Promise<{ destroyed: number; unfiled: number; refused?: SetError }>;
   createBook(name: string): Promise<Id>;
   updateBook(id: Id, patch: Partial<AddressBook>): Promise<void>;
   destroyBook(id: Id): Promise<void>;
@@ -211,10 +225,12 @@ interface ContactsState {
   /**
    * Import an address book in LDIF, read against Mozilla's schema.
    *
-   * `updated` is always 0: Mozilla's schema has no UID, so there is nothing to
-   * recognise a re-import by and everything arrives as new. `alike` says how
-   * many look like cards already here without acting on it. Answered in the
-   * same shape as the vCard import so the caller need not know which it called.
+   * Mozilla's schema has no UID, so a re-import is recognised by the entry's
+   * `dn` instead -- the same update-rather-than-duplicate rule the vCard import
+   * follows, on the only identity the file carries. `alike` is what is left
+   * over: entries that were created and still look like somebody already here,
+   * which is what a changed `dn` produces. Answered in the same shape as the
+   * vCard import so the caller need not know which it called.
    */
   importLdif(text: string, addressBookId: Id): Promise<{ created: number; updated: number; alike: number }>;
   loadPrincipals(): Promise<void>;
@@ -462,12 +478,12 @@ export const useContacts = create<ContactsState>((set, get) => ({
   async destroyCards(ids) {
     const accountId = get().accountId!;
     const gone: Id[] = [];
-    let failed: SetError | undefined;
+    let refused: SetError | undefined;
     try {
       for (const part of chunk(ids, client.maxObjectsInSet)) {
         const res = await client.call<SetResponse>("ContactCard/set", { accountId, destroy: part });
         gone.push(...(res.destroyed ?? []));
-        failed ??= Object.values(res.notDestroyed ?? {})[0];
+        refused ??= Object.values(res.notDestroyed ?? {})[0];
       }
     } finally {
       if (gone.length) {
@@ -478,7 +494,57 @@ export const useContacts = create<ContactsState>((set, get) => ({
         });
       }
     }
-    if (failed) throw new Error(setErrorMessage(failed));
+    /* Answered rather than thrown. A refusal that took half the selection with
+       it still deleted the other half, and an error that says only "it failed"
+       sends somebody looking for contacts that are already gone. */
+    return { destroyed: gone.length, refused };
+  },
+
+  async emptyBook(bookId) {
+    const accountId = get().accountId!;
+    const inBook = Object.values(get().cards).filter((c) => c.addressBookIds?.[bookId]);
+    /*
+     * Two different acts, decided per card.
+     *
+     * A card filed only here is deleted. A card filed here *and* somewhere else
+     * is removed from this book and left where it also lives -- emptying one
+     * book must not empty another, and `ContactCard/set destroy` does not know
+     * the difference: it takes the card away from every book at once.
+     */
+    const destroy: Id[] = [];
+    const update: Record<Id, unknown> = {};
+    for (const c of inBook) {
+      if (Object.keys(c.addressBookIds ?? {}).length > 1) update[c.id] = { [`addressBookIds/${bookId}`]: null };
+      else destroy.push(c.id);
+    }
+
+    const gone: Id[] = [];
+    let unfiled = 0;
+    let refused: SetError | undefined;
+    /* One budget for both, the way `writeCards` shares one: Stalwart counts
+       every object in a `/set` against `maxObjectsInSet` together. */
+    const work = [
+      ...destroy.map((id) => ["destroy", id] as const),
+      ...Object.keys(update).map((id) => ["update", id] as const),
+    ];
+    try {
+      for (const part of chunk(work, client.maxObjectsInSet)) {
+        const partDestroy = part.filter(([kind]) => kind === "destroy").map(([, id]) => id);
+        const partUpdate: Record<Id, unknown> = {};
+        for (const [kind, id] of part) if (kind === "update") partUpdate[id] = update[id];
+        const res = await client.call<SetResponse<ContactCard>>("ContactCard/set", {
+          accountId,
+          ...(partDestroy.length ? { destroy: partDestroy } : {}),
+          ...(Object.keys(partUpdate).length ? { update: partUpdate } : {}),
+        });
+        gone.push(...(res.destroyed ?? []));
+        unfiled += Object.keys(res.updated ?? {}).length;
+        refused ??= Object.values(res.notDestroyed ?? {})[0] ?? Object.values(res.notUpdated ?? {})[0];
+      }
+    } finally {
+      await get().loadAll();
+    }
+    return { destroyed: gone.length, unfiled, refused };
   },
 
   async createBook(name) {
@@ -568,43 +634,61 @@ export const useContacts = create<ContactsState>((set, get) => ({
    */
   async importLdif(text, addressBookId) {
     const accountId = get().accountId!;
-    const cards = parseLdif(text).map(cardFromLdif).filter((c): c is Partial<ContactCard> => c !== null);
-    if (!cards.length) throw new Error("it has no contacts in it");
+    /* The record and not just the card: the `dn` is the entry's identity and
+       `cardFromLdif` deliberately does not carry it into the card. */
+    const entries = parseLdif(text)
+      .map((rec) => ({ uid: uidFromDn(rec.dn), card: cardFromLdif(rec) }))
+      .filter((e): e is { uid: string | null; card: Partial<ContactCard> } => e.card !== null);
+    if (!entries.length) throw new Error("it has no contacts in it");
     /*
-     * Read before anything is created, so "already had" means before this
-     * import rather than including it. Every card here is imported either way;
-     * this only counts.
+     * Read before anything is written, so "already had" means before this
+     * import rather than including it.
      */
     const before = await scanBook(accountId, addressBookId);
     let alike = 0;
     const create: Record<string, unknown> = {};
-    cards.forEach((c, i) => {
-      if (likenessKeys(c).some((k) => before.likeness.has(k))) alike++;
-      // Built here rather than read from the file: LDIF identifies an entry by
-      // its distinguished name, which says where it sat in somebody's
-      // directory and is no use as a contact's identity anywhere else.
-      create[`c${i}`] = { "@type": "Card", version: "1.0", ...c, uid: crypto.randomUUID(), addressBookIds: { [addressBookId]: true } };
+    const update: Record<Id, unknown> = {};
+    /* Where in `create` an entry from this same file already landed. A
+       directory cannot hold two entries under one `dn`, so a file that does is
+       malformed -- but it must not become two cards sharing a uid, which is a
+       duplicate of exactly the kind being fixed here. The later one wins, as it
+       would in the directory. */
+    const pending = new Map<string, string>();
+    entries.forEach(({ uid, card }, i) => {
+      /*
+       * An entry whose `dn` this book already holds is that entry, and the
+       * newer version of it wins -- a merge, as the vCard import does it:
+       * properties the file carries overwrite what is here, properties it does
+       * not mention are left alone. The reason to import a file twice is
+       * usually that the first attempt was not right, so skipping would mean a
+       * corrected export corrects nothing (#174).
+       */
+      const existing = uid ? before.byUid.get(uid) : undefined;
+      if (existing) {
+        update[existing] = card;
+        return;
+      }
+      const seen = uid ? pending.get(uid) : undefined;
+      const key = seen ?? `c${i}`;
+      if (uid) pending.set(uid, key);
+      /*
+       * Only what is actually being created can look like a duplicate: what
+       * matched above is not a look-alike but the same entry. So this counts
+       * what `dn` matching could not catch -- an entry whose `dn` moved, or one
+       * imported before there was anything to match on -- and still only
+       * counts, because name-plus-email is a guess wrong in both directions and
+       * a merge made on a guess cannot be undone.
+       */
+      if (!seen && likenessKeys(card).some((k) => before.likeness.has(k))) alike++;
+      create[key] = { "@type": "Card", version: "1.0", ...card, uid: uid ?? crypto.randomUUID(), addressBookIds: { [addressBookId]: true } };
     });
-    let created: number;
     try {
-      const r = await writeCards(accountId, create);
-      created = r.created;
-      if (!created) throw new Error(r.refused ? setErrorMessage(r.refused) : "the server did not accept any of its contacts");
+      const { created, updated, refused } = await writeCards(accountId, create, update);
+      if (!created && !updated) throw new Error(refused ? setErrorMessage(refused) : "the server did not accept any of its contacts");
+      return { created, updated, alike };
     } finally {
       await get().loadAll();
     }
-    /*
-     * Nothing skipped, and nothing that could be. The UID above is invented
-     * here because Mozilla's schema does not define one, so a re-import has no
-     * identity to be recognised by -- see #223, where whether to guess at one
-     * from a name and an address is still an open question.
-     *
-     * `alike` is what can be said without answering it: how many of these look
-     * like contacts that were already here. Reporting is not matching -- every
-     * card was imported -- and it is the confusion rather than the duplication
-     * that was reported as the harm.
-     */
-    return { created, updated: 0, alike };
   },
 
   async loadPrincipals() {
