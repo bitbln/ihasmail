@@ -191,12 +191,29 @@ export const EMAIL_BASE_CSS = `
 .ihm-email-root.themed a { color: var(--link, #0f766e); }
 .ihm-email-root.themed hr { border-color: var(--border, #e3e7ec); }
 .ihm-email-root.themed img[data-ihm-blocked] { background: var(--bg-sunken, #f1f5f9) repeating-linear-gradient(45deg, var(--bg-hover, #e2e8f0) 0 6px, transparent 6px 12px); border-color: var(--border-strong, #cbd5e1); }
+
+/* "Even mail that styles itself" — the second, opt-in switch, applied on top of
+   .themed. Everything the sender coloured is neutralised except the surfaces
+   marked by markKeptSurfaces() and what it marked as sitting on them, so a
+   white wrapper table
+   stops being a bright card while a blue button keeps its white label. The
+   sender's markup is untouched; this is all cascade, so the switch is
+   reversible and print still pins the tokens to ink on white. */
+.ihm-email-root.forced { color: var(--fg, #1f2937) !important; background: var(--bg-elev, #fff) !important; }
+.ihm-email-root.forced *:not([data-ihm-keep]):not([data-ihm-in-keep]) { color: inherit !important; background-color: transparent !important; }
+.ihm-email-root.forced a:not([data-ihm-keep]):not([data-ihm-in-keep]) { color: var(--link, #0f766e) !important; }
 `;
 
 /**
  * Does this message paint itself? Mail that sets a background or text colour
  * has a design of its own, and forcing a dark palette on half of it is worse
  * than leaving it alone — so those keep the light card they were built for.
+ *
+ * The bar is deliberately low, and that is the point of the second switch
+ * (`themeStyledMessages`): in real mail this is true of very nearly everything.
+ * One `color:#FFFFFF` on one button label is enough, so a template that is
+ * plain in every way a reader would notice still counts as painting itself.
+ * See `markKeptSurfaces` for what the opt-in does about it.
  */
 export function htmlDeclaresColors(html: string, bodyStyle = ""): boolean {
   const haystack = `${bodyStyle} ${html}`;
@@ -205,6 +222,132 @@ export function htmlDeclaresColors(html: string, bodyStyle = ""): boolean {
     /<font[^>]*\bcolor\s*=/i.test(haystack) ||
     /(?:^|[;"'\s{])(?:background(?:-color)?|color)\s*:/i.test(haystack)
   );
+}
+
+/* ---------- forcing the theme onto mail that styles itself ---------- */
+
+/**
+ * Relative luminance per WCAG 2.x, or `null` when the colour cannot be read.
+ *
+ * Only what actually turns up in mail is parsed: hex in three, six or eight
+ * digits, `rgb()`/`rgba()`, and the handful of names senders still write out.
+ * Anything else is `null`, which the caller treats as "not a deliberate
+ * surface" — the safe way round, because the failure it avoids is a white
+ * sheet surviving the switch the reader just turned on.
+ */
+const NAMED: Record<string, string> = {
+  white: "#ffffff", ivory: "#fffff0", snow: "#fffafa", whitesmoke: "#f5f5f5",
+  ghostwhite: "#f8f8ff", floralwhite: "#fffaf0", seashell: "#fff5ee", beige: "#f5f5dc",
+  linen: "#faf0e6", lightgray: "#d3d3d3", lightgrey: "#d3d3d3", gainsboro: "#dcdcdc",
+  silver: "#c0c0c0", gray: "#808080", grey: "#808080", black: "#000000",
+  navy: "#000080", darkblue: "#00008b", maroon: "#800000", teal: "#008080",
+};
+
+export function relativeLuminance(color: string): number | null {
+  const raw = color.trim().toLowerCase();
+  if (!raw || raw === "transparent" || raw === "inherit" || raw === "initial" || raw === "none") return null;
+  let r: number, g: number, b: number, a = 1;
+  const named = NAMED[raw];
+  const hex = (named ?? raw).match(/^#([0-9a-f]{3,8})$/);
+  if (hex) {
+    const h = hex[1]!;
+    if (h.length === 3) [r, g, b] = [h[0]! + h[0]!, h[1]! + h[1]!, h[2]! + h[2]!].map((x) => parseInt(x, 16)) as [number, number, number];
+    else if (h.length === 6 || h.length === 8) {
+      r = parseInt(h.slice(0, 2), 16); g = parseInt(h.slice(2, 4), 16); b = parseInt(h.slice(4, 6), 16);
+      if (h.length === 8) a = parseInt(h.slice(6, 8), 16) / 255;
+    } else return null;
+  } else {
+    const m = raw.match(/^rgba?\(\s*([0-9.]+)[\s,]+([0-9.]+)[\s,]+([0-9.]+)(?:[\s,/]+([0-9.%]+))?\s*\)$/);
+    if (!m) return null;
+    r = Number(m[1]); g = Number(m[2]); b = Number(m[3]);
+    if (m[4] !== undefined) a = m[4].endsWith("%") ? Number(m[4].slice(0, -1)) / 100 : Number(m[4]);
+  }
+  if ([r, g, b, a].some((n) => !Number.isFinite(n))) return null;
+  // A fully transparent colour paints nothing, whatever its channels say.
+  if (a === 0) return null;
+  const lin = (c: number) => { const x = c / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+/**
+ * Above this, a background is a sheet the message is laid on rather than a
+ * thing drawn on top of it. White wrappers sit at 1.0; the blue of a call to
+ * action lands near 0.09, mid-grey near 0.22.
+ */
+export const LIGHT_SURFACE_LUMINANCE = 0.5;
+
+/** The background an element declares itself, or null if it declares none we can read. */
+function declaredLuminance(el: HTMLElement): number | null {
+  const declared = el.getAttribute("bgcolor") ?? el.style?.backgroundColor ?? "";
+  if (!declared) return null;
+  return relativeLuminance(declared);
+}
+
+/**
+ * Mark the surfaces that must survive being themed, and count them.
+ *
+ * The reader has asked for their palette on mail that brings its own, which
+ * cannot be done perfectly — this is the same bargain a dark-reader extension
+ * makes. What it can do is tell the two kinds of colour apart: a **sheet** the
+ * design sits on, which is what reads as a bright card and is neutralised, and
+ * a **painted surface** — a button, a banner — which is kept whole so its
+ * label stays legible on it.
+ *
+ * Two attributes come out of this. `data-ihm-keep` is a painted surface, which
+ * keeps its own colours. `data-ihm-in-keep` is an element sitting on one with
+ * no background of its own, whose colour is left alone so a white label on a
+ * blue button stays readable. One rule in EMAIL_BASE_CSS neutralises
+ * everything else.
+ *
+ * The distinction that matters is that being *inside* a painted surface is not
+ * inherited past a sheet. A light table nested in a dark 600px card is still a
+ * sheet and is still neutralised — that is issue #310, where a dark campaign
+ * rendered with beige cards inside it because the exemption used to be
+ * `[data-ihm-keep] *` in CSS and could not see the difference. Paint resumes
+ * below it: a dark button inside that nested table is kept as usual.
+ *
+ * Nothing the sender wrote is removed, so turning the switch off puts the
+ * message back exactly as it was — and a colour that arrived from a `<style>`
+ * block rather than an attribute is covered too, which is most of them in
+ * modern templates.
+ */
+export function markKeptSurfaces(root: ParentNode): number {
+  let kept = 0;
+
+  // An explicit stack rather than recursion: this walks untrusted mail, and
+  // deeply nested tables are exactly what old newsletter HTML is made of.
+  const stack: Array<{ el: HTMLElement; onPaint: boolean }> = [];
+  const push = (parent: ParentNode, onPaint: boolean) => {
+    for (const child of Array.from(parent.children)) {
+      stack.push({ el: child as HTMLElement, onPaint });
+    }
+  };
+
+  push(root, false);
+
+  while (stack.length) {
+    const { el, onPaint } = stack.pop()!;
+    const lum = declaredLuminance(el);
+    let childrenOnPaint = onPaint;
+
+    if (lum !== null && lum < LIGHT_SURFACE_LUMINANCE) {
+      // Painted: keep it whole, and anything on it inherits that protection.
+      el.setAttribute("data-ihm-keep", "");
+      kept++;
+      childrenOnPaint = true;
+    } else if (lum !== null) {
+      // A sheet, wherever it sits. Left unmarked so it neutralises, and it
+      // ends the protection rather than passing it on.
+      childrenOnPaint = false;
+    } else if (onPaint) {
+      // No background of its own, sitting on paint: leave its colour alone.
+      el.setAttribute("data-ihm-in-keep", "");
+    }
+
+    push(el, childrenOnPaint);
+  }
+
+  return kept;
 }
 
 export const TEXT_EMAIL_CSS = `

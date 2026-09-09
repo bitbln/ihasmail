@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, Download, ExternalLink, Forward, MailPlus, MoreVertical, Printer, Reply, ReplyAll, Star, Trash2, Code, FileText, Image as ImageIcon, File, Eye, Calendar, CalendarPlus, UserPlus, ShieldAlert, Mail, Ban, Clock, CheckCheck, Paperclip, FileArchive, FileSpreadsheet, Film, Music, Filter } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, ExternalLink, Forward, MailPlus, MoreVertical, Printer, Reply, ReplyAll, Star, Trash2, Code, FileText, Image as ImageIcon, File as FileIcon, Eye, Calendar, CalendarPlus, UserPlus, ShieldAlert, Mail, Ban, Clock, CheckCheck, Paperclip, FileArchive, FileSpreadsheet, Film, Music, Filter, Share2 } from "lucide-react";
 import { useLocation } from "wouter";
 import { FilterFromMessageDialog } from "./FilterFromMessage";
 import type { Email, EmailAddress, EmailBodyPart, Id } from "@/jmap/types";
@@ -18,10 +18,11 @@ import { internalDomains, isExternalSender, linkVerdict } from "@/lib/warnings";
 import { spamReport, type SpamReport } from "@/lib/spamScore";
 import { formatFullDate, formatListDate, formatSize } from "@/lib/format";
 import { displayName, domainOf, formatAddress } from "@/lib/address";
-import { EMAIL_BASE_CSS, TEXT_EMAIL_CSS, htmlDeclaresColors, sanitizeEmailHtml } from "@/lib/html";
+import { EMAIL_BASE_CSS, TEXT_EMAIL_CSS, htmlDeclaresColors, markKeptSurfaces, sanitizeEmailHtml } from "@/lib/html";
 import { openableInTab, previewKind } from "@/lib/preview";
 import { FilePreviewDialog } from "@/ui/filepreview";
-import { findQuoteStart, textToHtml } from "@/lib/text";
+import { findQuoteStart, htmlToText, textToHtml } from "@/lib/text";
+import { canShare, canShareFiles, shareFile, shareText } from "@/lib/share";
 import { Avatar } from "@/ui/misc";
 import { MenuItem, MenuSep, Popover, useMenu } from "@/ui/popover";
 import { Dialog, choiceDialog} from "@/ui/dialog";
@@ -35,7 +36,7 @@ import { useScheduled } from "@/store/scheduled";
 import { formatScheduleTime } from "@/lib/schedule";
 import { mdnDecision, refusalText } from "@/lib/mdn";
 import { sendReadReceipt } from "@/store/mdn";
-import { t as translate, tNode } from "@/lib/i18n";
+import { t as translate, tc, tNode } from "@/lib/i18n";
 
 interface Props {
   email: Email;
@@ -138,6 +139,7 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
   const textRaw = textPart?.partId ? e.bodyValues?.[textPart.partId]?.value : undefined;
   const showHtml = Boolean(htmlRaw);
   const themeMessageBody = settings.themeMessageBody;
+  const themeStyledMessages = settings.themeStyledMessages;
 
   // Inline images map
   const cidMap = useMemo(() => {
@@ -158,12 +160,20 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
     return null;
   }, [expanded, showHtml, htmlRaw, cidMap, remoteAllowed, imageProxy]);
 
-  // Mail that paints itself keeps the light card it was designed for; the rest
-  // can follow the app theme when the user has asked for that.
-  const themed = useMemo(
-    () => themeMessageBody && Boolean(rendered) && !htmlDeclaresColors(rendered!.html, rendered!.bodyStyle),
-    [themeMessageBody, rendered],
+  /*
+   * Mail that paints itself keeps the light card it was designed for, unless
+   * the reader has asked for the theme over that too.
+   *
+   * `forced` is the second switch and is narrower than `themed`: it only turns
+   * on for mail that actually declares colours, so plain mail is themed the
+   * gentle way and never pays for the override rules.
+   */
+  const declaresColors = useMemo(
+    () => Boolean(rendered) && htmlDeclaresColors(rendered!.html, rendered!.bodyStyle),
+    [rendered],
   );
+  const themed = themeMessageBody && Boolean(rendered) && (!declaresColors || themeStyledMessages);
+  const forced = themed && declaresColors;
 
   const attachments = useMemo(() => (e.attachments ?? []).filter((a) => !(a.cid && a.disposition === "inline" && a.type.startsWith("image/") && htmlRaw?.includes(`cid:${a.cid}`))), [e.attachments, htmlRaw]);
   const icsPart = useMemo(() => findPart(e.bodyStructure, (p) => p.type === "text/calendar" || (p.name ?? "").toLowerCase().endsWith(".ics")), [e.bodyStructure]);
@@ -200,6 +210,25 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
     a.href = client.downloadUrl(accountId, e.blobId, emlFilename(e.subject), "message/rfc822");
     a.download = "";
     a.click();
+  };
+
+  /*
+   * Pass the message itself to another app -- the reply that has to go to
+   * somebody who is not on mail, the address read out over a chat.
+   *
+   * Text rather than the `.eml` above, and the difference is who the other end
+   * is. A message file is for another mail client; a share sheet is aimed at
+   * everything that is not one, and handing WhatsApp an `.eml` gives it an
+   * attachment nobody can open. So the plain-text body goes, falling back to
+   * the HTML flattened, which is the same body the sender wrote either way.
+   */
+  const shareMessage = async () => {
+    const body = textRaw ?? (htmlRaw ? htmlToText(htmlRaw) : "");
+    try {
+      await shareText({ title: e.subject || translate("(no subject)"), text: body });
+    } catch (err) {
+      toast.error(translate("Could not share: {error}", { error: (err as Error).message }));
+    }
   };
 
   const onUnsubscribe = async () => {
@@ -313,6 +342,7 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
         <MenuItem icon={<Eye size={16} />} label={translate("Show original")} onClick={() => void openSource()} />
         <MenuItem icon={<Code size={16} />} label={translate("Show headers")} onClick={() => setShowHeaders(true)} />
         <MenuItem icon={<Download size={16} />} label={translate("Download (.eml)")} onClick={downloadEml} />
+        {canShare() && <MenuItem icon={<Share2 size={16} />} label={tc("share sheet", "Share…")} onClick={() => void shareMessage()} />}
         <MenuItem icon={<Printer size={16} />} label={translate("Print")} onClick={printThis} />
         <MenuItem icon={<Filter size={16} />} label={translate("Filter messages like this…")} onClick={() => setFilterOpen(true)} />
         {hasCalendar && <MenuItem icon={<CalendarPlus size={16} />} label={translate("Create event…")} onClick={() => void startAppointment(e, navigate).catch((err: unknown) => toast.error((err as Error).message))} />}
@@ -412,7 +442,7 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
           {icsPart && <InviteCard email={e} part={icsPart} />}
           {vcfParts.map((p) => <VCardCard key={p.blobId ?? p.partId ?? ""} part={p} accountId={accountId} />)}
           <div className="message-body">
-            {showHtml && rendered ? <HtmlBody html={rendered.html} bodyStyle={rendered.bodyStyle} themed={themed} onShowImages={showImages} onFollowLink={linkGuard} /> : <TextBody text={textRaw ?? ""} onFollowLink={linkGuard} />}
+            {showHtml && rendered ? <HtmlBody html={rendered.html} bodyStyle={rendered.bodyStyle} themed={themed} forced={forced} onShowImages={showImages} onFollowLink={linkGuard} /> : <TextBody text={textRaw ?? ""} onFollowLink={linkGuard} />}
           </div>
           {attachments.length > 0 && <AttachmentList attachments={attachments} accountId={accountId} email={e} />}
           {unsubscribe && (
@@ -490,7 +520,7 @@ function findPart(p: EmailBodyPart | undefined, pred: (p: EmailBodyPart) => bool
 
 const QUOTE_SELECTORS = [".gmail_quote", "blockquote[type=cite]", ".moz-cite-prefix", "#divRplyFwdMsg", ".yahoo_quoted", "div[id^=appendonsend]", ".ms-outlook-mobile-reference-message", "#OLK_SRC_BODY_SECTION", ".protonmail_quote", ".ihm-quote"];
 
-function HtmlBody({ html, bodyStyle, themed, onShowImages, onFollowLink }: { html: string; bodyStyle: string; themed: boolean; onFollowLink: ((href: string, text: string | null) => void) | null; onShowImages: () => void }) {
+function HtmlBody({ html, bodyStyle, themed, forced, onShowImages, onFollowLink }: { html: string; bodyStyle: string; themed: boolean; forced: boolean; onFollowLink: ((href: string, text: string | null) => void) | null; onShowImages: () => void }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [hasQuote, setHasQuote] = useState(false);
   const [quoteOpen, setQuoteOpen] = useState(false);
@@ -530,9 +560,12 @@ function HtmlBody({ html, bodyStyle, themed, onShowImages, onFollowLink }: { htm
     if (!host) return;
     const root = host.shadowRoot ?? host.attachShadow({ mode: "open" });
     host.classList.toggle("themed", themed);
-    root.innerHTML = `<style>${EMAIL_BASE_CSS}</style><div class="ihm-email-root${themed ? " themed" : ""}" style="${bodyStyle.replace(/"/g, "'")}">${html}</div>`;
+    root.innerHTML = `<style>${EMAIL_BASE_CSS}</style><div class="ihm-email-root${themed ? " themed" : ""}${forced ? " forced" : ""}" style="${bodyStyle.replace(/"/g, "'")}">${html}</div>`;
     // Collapse quoted content
     const container = root.querySelector(".ihm-email-root") as HTMLElement | null;
+    // Tell the sender's painted surfaces apart from the sheets they sit on,
+    // before anything below reshapes the tree.
+    if (forced && container) markKeptSurfaces(container);
     let found = false;
     if (container) {
       let q: Element | null = null;
@@ -592,7 +625,7 @@ function HtmlBody({ html, bodyStyle, themed, onShowImages, onFollowLink }: { htm
      * so a changing handler now costs a listener swap and nothing else.
      */
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [html, bodyStyle, themed]);
+  }, [html, bodyStyle, themed, forced]);
 
   useEffect(() => {
     const root = hostRef.current?.shadowRoot;
@@ -731,7 +764,7 @@ export function attachmentIcon(type: string, name?: string | null) {
   if (t === "text/calendar") return <Calendar size={18} />;
   if (t.includes("vcard")) return <UserPlus size={18} />;
   if (t.startsWith("text/") || /word|document/.test(t)) return <FileText size={18} />;
-  return <File size={18} />;
+  return <FileIcon size={18} />;
 }
 
 /**
@@ -810,6 +843,36 @@ function TnefContents({ part, accountId }: { part: EmailBodyPart; accountId: Id 
 
 function AttachmentList({ attachments, accountId, email }: { attachments: EmailBodyPart[]; accountId: Id; email: Email }) {
   const [preview, setPreview] = useState<EmailBodyPart | null>(null);
+
+  /*
+   * The same share the preview dialog offers, on the row itself.
+   *
+   * Both are wanted: a photo is opened and then passed on, but a spreadsheet
+   * cannot be previewed at all and passing it on is the only thing anybody
+   * wants to do with it from a phone.
+   *
+   * Falls back to the download it sits beside where the browser turns out not
+   * to take the file -- see the note on `shareFile`, which is where the
+   * transient-activation case is explained.
+   */
+  const shareAttachment = async (a: EmailBodyPart) => {
+    if (!a.blobId) return;
+    const name = a.name ?? "attachment";
+    const download = () => {
+      const l = document.createElement("a");
+      l.href = client.downloadUrl(accountId, a.blobId!, name, a.type);
+      l.download = name;
+      l.click();
+    };
+    try {
+      const blob = await client.fetchBlob(accountId, a.blobId, a.type);
+      const out = await shareFile(new File([blob], name, { type: a.type || blob.type || "application/octet-stream" }));
+      if (out === "unsupported") download();
+    } catch {
+      download();
+    }
+  };
+
   /* Whether we can show it, and whether the server will serve it inline, are
      different questions -- see the note in lib/preview.ts. */
   const viewable = (a: EmailBodyPart) => Boolean(a.blobId) && previewKind(a.type, a.name) !== null;
@@ -830,6 +893,7 @@ function AttachmentList({ attachments, accountId, email }: { attachments: EmailB
                 <span className="att-size">{formatSize(a.size)}</span>
                 <span className="att-actions">
                   <button className="icon-btn xs" title={translate("Download")} onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); const l = document.createElement("a"); l.href = url; l.download = a.name ?? ""; l.click(); }}><Download size={14} /></button>
+                  {canShareFiles() && a.blobId && <button className="icon-btn xs" title={tc("share sheet", "Share")} onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); void shareAttachment(a); }}><Share2 size={14} /></button>}
                   {openableInTab(a.type) && a.blobId && <button className="icon-btn xs" title={translate("Open in new tab")} onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); window.open(inlineUrl, "_blank", "noopener"); }}><ExternalLink size={14} /></button>}
                 </span>
               </span>
