@@ -107,14 +107,39 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
     if (mailboxesLoaded && mailboxId && mailboxId === scheduledId) void reconcile();
   }, [mailboxId, scheduledId, mailboxesLoaded, reconcile]);
 
+  /*
+   * With conversation view off, a row is a message rather than a thread, and
+   * opening one must show that message and highlight that row -- not its whole
+   * thread and every sibling row in the list.
+   *
+   * The thread id stays in the path, so loading is unchanged; the message rides
+   * in `m`. Putting it in the URL rather than in memory is what makes a reload
+   * or a shared link land back on the same message, and dropping the parameter
+   * degrades to the conversation, which is the right thing for a link sent to
+   * somebody whose setting differs.
+   */
   const openThread = useCallback(
-    (tid: Id | null) => {
+    (tid: Id | null, messageId?: Id | null) => {
       const base = search ? `/search` : `/mail/${mailboxId}`;
-      const qs = search ? `?q=${encodeURIComponent(q)}` : "";
+      const params = new URLSearchParams();
+      if (search) params.set("q", q);
+      if (tid && messageId) params.set("m", messageId);
+      const qs = params.size ? `?${params}` : "";
       navigate(tid ? `${base}/${tid}${qs}` : `${base}${qs}`);
     },
     [navigate, search, mailboxId, q],
   );
+
+  /**
+   * The message the URL singles out, if any. Only meaningful with conversation
+   * view off; ThreadView decides what to do when the id names nothing in the
+   * thread, since it is the part that knows what the thread holds.
+   */
+  const openMessageId = useMemo(() => {
+    if (settings.conversationMode) return null;
+    const m = new URLSearchParams(searchStr).get("m");
+    return m || null;
+  }, [settings.conversationMode, searchStr]);
 
   // Row ids in list + helpers for keyboard nav
   const ids = list?.ids ?? [];
@@ -129,9 +154,17 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
       const i = ids.indexOf(focusId);
       if (i >= 0) return i;
     }
+    // A cold load has no focus yet. With conversation view off the URL names the
+    // row exactly; matching on the thread instead would land on whichever of its
+    // messages sorts first, so j/k and the scroll-into-view would start from the
+    // wrong row on any thread with more than one message in the folder.
+    if (openMessageId) {
+      const i = ids.indexOf(openMessageId);
+      if (i >= 0) return i;
+    }
     if (threadId) return ids.findIndex((id) => rowThreadId(id) === threadId);
     return -1;
-  }, [ids, focusId, threadId, rowThreadId]);
+  }, [ids, focusId, openMessageId, threadId, rowThreadId]);
 
   /** Email ids affected by an action on rows (selection or focused/open row). */
   const targetIds = useCallback(
@@ -339,9 +372,9 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
         void openDraft(e);
         return;
       }
-      openThread(e.threadId);
+      openThread(e.threadId, settings.conversationMode ? null : rowId);
     },
-    [emails, mailboxId, mailboxes, openThread, openDraft],
+    [emails, mailboxId, mailboxes, openThread, openDraft, settings.conversationMode],
   );
 
   const title = search ? translate("Search: {query}", { query: listQuery?.label ?? q }) : (mailboxId && mailboxDisplayName(mailboxes[mailboxId])) || translate("Mail");
@@ -352,18 +385,24 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
   const layoutRef = useRef<HTMLDivElement>(null);
   const updateSettings = useSettings((s) => s.update);
   const [liveSize, setLiveSize] = useState<number | null>(null);
+  // Mirrors liveSize for the end of a key press, which follows the resize in
+  // the same tick -- before the state could have come back round.
+  const liveSizeRef = useRef<number | null>(null);
   const paneSize = liveSize ?? (settings.readingPane === "bottom" ? settings.listPaneHeight : settings.listPaneWidth);
   const onSplit = (delta: number) => {
     const el = layoutRef.current;
     const total = el ? (settings.readingPane === "bottom" ? el.clientHeight : el.clientWidth) : 1200;
     const min = settings.readingPane === "bottom" ? 160 : 320;
     const max = Math.max(min, total - (settings.readingPane === "bottom" ? 200 : 420));
-    setLiveSize((cur) => Math.min(max, Math.max(min, (cur ?? paneSize) + delta)));
+    const next = Math.min(max, Math.max(min, (liveSizeRef.current ?? paneSize) + delta));
+    liveSizeRef.current = next;
+    setLiveSize(next);
   };
   const onSplitEnd = () => {
-    if (liveSize == null) return;
-    updateSettings(settings.readingPane === "bottom" ? { listPaneHeight: liveSize } : { listPaneWidth: liveSize });
+    const size = liveSizeRef.current;
+    liveSizeRef.current = null;
     setLiveSize(null);
+    if (size != null) updateSettings(settings.readingPane === "bottom" ? { listPaneHeight: size } : { listPaneWidth: size });
   };
 
   return (
@@ -373,6 +412,7 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
           title={title}
           list={list}
           openThreadId={threadId ?? null}
+          openMessageId={openMessageId}
           focusId={focusId}
           setFocusId={setFocusId}
           onOpen={onOpenRow}
@@ -382,17 +422,29 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
         />
       )}
       {showList && showReading && settings.readingPane !== "off" && !narrow && (
-        <Splitter direction={settings.readingPane === "bottom" ? "horizontal" : "vertical"} onResize={onSplit} onEnd={onSplitEnd} onReset={() => updateSettings(settings.readingPane === "bottom" ? { listPaneHeight: 340 } : { listPaneWidth: 520 })} ariaLabel="Resize message list" />
+        <Splitter direction={settings.readingPane === "bottom" ? "horizontal" : "vertical"} onResize={onSplit} onEnd={onSplitEnd} onReset={() => updateSettings(settings.readingPane === "bottom" ? { listPaneHeight: 340 } : { listPaneWidth: 520 })} ariaLabel={translate("Resize message list")} />
       )}
       {showReading && (
         <div className="mail-reading-pane">
           {threadId ? (
-            <ThreadView key={threadId} threadId={threadId} mailboxId={mailboxId ?? null} onBack={() => openThread(null)} actions={actions} onNavigate={(delta) => { const idx = currentRowIndex; const next = ids[idx + delta]; const t = next ? rowThreadId(next) : undefined; if (t) { setFocusId(next!); openThread(t); } }} hasPrev={currentRowIndex > 0} hasNext={currentRowIndex >= 0 && currentRowIndex < ids.length - 1} />
+            <ThreadView key={`${threadId}:${openMessageId ?? ""}`} threadId={threadId} messageId={openMessageId} mailboxId={mailboxId ?? null} onBack={() => openThread(null)} actions={actions} onNavigate={(delta) => { const idx = currentRowIndex; const next = ids[idx + delta]; const t = next ? rowThreadId(next) : undefined; if (t) { setFocusId(next!); openThread(t, settings.conversationMode ? null : next!); } }} hasPrev={currentRowIndex > 0} hasNext={currentRowIndex >= 0 && currentRowIndex < ids.length - 1} />
           ) : (
             <div className="no-thread">
               <img src={withBase("/img/logo.png")} alt="" />
-              <div>{list?.total ? plural(list.total, { one: "{n} conversation", other: "{n} conversations" }) : translate("No conversation selected")}</div>
-              <div className="hint">{tNode("Select a conversation to read it here · Press {key} for shortcuts", { key: <kbd className="kbd">?</kbd> })}</div>
+              <div>
+                {list?.total
+                  ? settings.conversationMode
+                    ? plural(list.total, { one: "{n} conversation", other: "{n} conversations" })
+                    : plural(list.total, { one: "{n} message", other: "{n} messages" })
+                  : settings.conversationMode
+                    ? translate("No conversation selected")
+                    : translate("No message selected")}
+              </div>
+              <div className="hint">
+                {settings.conversationMode
+                  ? tNode("Select a conversation to read it here · Press {key} for shortcuts", { key: <kbd className="kbd">?</kbd> })
+                  : tNode("Select a message to read it here · Press {key} for shortcuts", { key: <kbd className="kbd">?</kbd> })}
+              </div>
             </div>
           )}
         </div>

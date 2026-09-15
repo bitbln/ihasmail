@@ -12,10 +12,12 @@ questions:
 | [KNOWN-ISSUES.md](KNOWN-ISSUES.md) | What was verified live, and where Stalwart departs from a spec |
 | [docs.ihasmail.org](https://docs.ihasmail.org) | How to install, configure and drive each of these |
 
-Written against the tree at Stalwart **0.16.21**, which is the version the live
+Written against the tree at Stalwart **0.16.22**, which is the version the live
 instance runs. Behaviours carrying an older version below were checked against
-that one and have not changed since; where 0.16.21 changed something, the entry
-says so and names both. ihasmail
+that one and have not changed since; where a later release changed something,
+the entry says so and names both. 0.16.22 changed nothing described here: its
+client-visible changes are in what `CalendarEvent/get` and `ContactCard/get`
+return, and [KNOWN-ISSUES.md](KNOWN-ISSUES.md) lists them. ihasmail
 requires 0.16 or newer and refuses older servers at sign-in, by name.
 
 ## The shape of it
@@ -69,9 +71,11 @@ per-account shape.
 ## Layout
 
 Three panes: folder tree, message list, reading pane. The splitter between the
-list and the reading pane is dragged to resize, and the size is remembered per
-device — a width chosen on a 27" monitor is wrong on a laptop, so it is one of
-the few settings that does not follow the account.
+list and the reading pane is dragged to resize, and so is the edge of the
+sidebar, between 240 and 480px; arrow keys move either one, and a double-click
+puts it back. The sizes are remembered per device — a width chosen on a 27"
+monitor is wrong on a laptop, so they are among the few settings that do not
+follow the account.
 
 - **Reading pane** right of the list, below it, or off (messages open full width).
 - **Density** comfortable, cozy or compact, which changes row height as well as padding.
@@ -1093,6 +1097,117 @@ needed nothing in either half.
 
 ---
 
+# Administration
+
+An account whose Stalwart role manages other accounts finds **Administration**
+in the account menu, top right. Nobody else sees the entry, and the page
+redirects them to their mail if they type its address in.
+
+## What it offers is what the role allows
+
+At sign-in the server already asks Stalwart's `GET /api/account` for the
+edition; it now keeps the account's **permissions** from the same answer and
+hands them to the browser with the session. The menu appears for an account
+that can query and read accounts (`sysAccountQuery`, `sysAccountGet`) or
+domains (`sysDomainQuery`, `sysDomainGet`), and each control inside is there only when the matching permission is:
+**New account** with `sysAccountCreate`, editing with `sysAccountUpdate`,
+**Delete** with `sysAccountDestroy`. A system administrator, a tenant
+administrator and a custom helpdesk role each see the same screen shaped to
+what they can do.
+
+None of that is the security boundary. Every read and write is a JMAP `x:`
+call through the ordinary `/api/jmap` proxy, authenticated as the signed-in
+account, and Stalwart decides each one — scoping a tenant administrator's
+queries to their own tenant and refusing anything the role does not allow.
+The client's gating only avoids offering what would fail.
+
+## Accounts
+
+- **List and search** by name or address, fifty to a page, newest first — the
+  server's own order. Role, storage used against the limit, and groups at a
+  glance.
+- **Create** an account on any domain the role can see: display name, address,
+  a generated password to copy and pass on, role, and storage limit.
+- **Edit** the display name, other addresses (aliases), role and storage limit.
+  One save sends only what changed.
+- **Set a new password.** It goes into the account's existing password
+  credential, and signs the person out of every app and device using the old
+  one, because Stalwart ties every token to the password.
+- **Delete**, after typing the address to confirm. Stalwart removes the
+  mailbox's data in the background, and says so.
+
+Roles are offered only when the viewer holds every permission they carry,
+which is the check Stalwart makes on a grant. It does **not** make that check
+when only a password changes, or on a delete, so an account allowed to edit
+accounts could otherwise reset the password of one that can do more and sign
+in as it. ihasmail shows any account that outranks the viewer read-only, and
+counts a role it cannot read as outranking rather than not. Nobody can change
+their own role or delete the account they are signed in with.
+
+## Domains
+
+For a role that can read domains (`sysDomainQuery`, `sysDomainGet`):
+
+- **List and search**, with how many accounts use each domain and whether its
+  DNS records, DKIM keys and certificate are managed automatically or by hand.
+- **Add** a domain. Stalwart gives a new one automatic DKIM, so it has keys
+  straight away.
+- **Edit** the description, other names for the domain, the catch-all address,
+  and plus addressing (`name+anything@`). A plus-addressing rule set on the
+  server is shown and left alone.
+- **DNS records**, one per row with a copy button each, and the lot as a zone
+  file. Stalwart computes them per domain — MX, SPF, DKIM, DMARC, the service
+  records, MTA-STS, TLS reporting, CAA — and ihasmail joins a long DKIM record
+  back into the single value a DNS provider's form wants.
+- **DKIM keys** with their stage — signing, published and waiting, retiring —
+  read-only, because the server creates and rotates them itself when DKIM is
+  automatic, and a key added by hand needs its private key.
+- **Remove** a domain once nothing uses it. While accounts do, removal says how
+  many and stays unavailable. The domain's own DKIM keys go with it, since the
+  server will not remove a domain its keys still name — which also means a role
+  that cannot delete keys cannot remove a domain that has any.
+
+Switching DNS, DKIM or certificate management between automatic and manual,
+and choosing a DNS or ACME provider, stay in Stalwart's own interface for now.
+
+## Only on your own device
+
+Administration is available only to a session signed in with **"This is my own
+device"** ticked. A borrowed laptop or a shared machine is exactly where nobody
+should be able to reset a password or remove a domain, and that tickbox is the
+one question the sign-in page already asks about where it is being used.
+
+It is enforced the same way as the switch below: an untrusted session is sent
+no permissions, and the JMAP proxy refuses registry methods beyond the account's
+own. The menu still shows **Administration** to an administrator in that
+session, greyed out, with the reason and what to do about it — signing in again
+with the box ticked — rather than losing the entry without a word. All the
+server tells that session is that the account administers, never what it may do.
+
+## An operator can turn it off
+
+`ADMINISTRATION=0` at launch removes it for everyone, and not only from the
+menu. The permissions are no longer sent to the browser, and the JMAP proxy
+refuses Stalwart registry methods except the ones about the signed-in account
+itself — its password, app passwords, API keys, public keys, masked addresses
+and account settings. Without that, hiding the menu would leave an
+administrator's browser console able to make every call the menu made.
+Stalwart's own interface is unaffected; this decides what ihasmail offers.
+
+## Stateless, as everything else
+
+Nothing new is stored anywhere. There is no admin route on ihasmail's server,
+no database and no cache beyond the permissions list that rides along with the
+session information already kept for thirty minutes — so a role granted or
+taken away shows in the menu at the next sign-in or within half an hour, and in
+the meantime Stalwart refuses what is no longer allowed.
+
+Accounts and domains are the first two sections. Groups, mailing lists, roles
+and tenants are Stalwart capabilities the same screen is laid out to take;
+reporting, queues, logs and server settings are deliberately out of scope.
+
+---
+
 # Live updates and notifications
 
 - **JMAP push over EventSource**, proxied by ihasmail's server so the browser
@@ -1276,6 +1391,7 @@ costs something to get wrong is the one that assumes the machine is yours.
 | Idle sign-out | after 5 minutes | none |
 | Kept on the computer | nothing | settings cache, recent addresses, username |
 | Background notifications | refused | available |
+| Administration | unavailable | available, if the role allows it |
 
 Local storage is gated on that answer for **reads** as well as writes — a
 machine trusted once still has residue, and honouring it would let a previous
@@ -1459,6 +1575,7 @@ wizard, because either would be state.
 | `UPSTREAM_TIMEOUT` | `30000` | Milliseconds |
 | `MAX_UPLOAD_BYTES` | `52428800` | 50 MB |
 | `IMAGE_PROXY` | `1` | Privacy proxy for remote images |
+| `ADMINISTRATION` | `1` | Offer in-app administration to accounts whose Stalwart role allows it; `0` turns it off, in the proxy as well as the menu |
 | `LOGIN_RATE_LIMIT` | `10` | Attempts per window |
 | `COOKIE_NAME` | `ihm_session` | |
 | `APP_NAME` | `ihasmail` | Branding |
@@ -1543,6 +1660,13 @@ moves an occurrence renumbering the ids around it. Two switches:
 `MOCK_NO_FUTURE_RELEASE=1` advertises FUTURERELEASE and then drops every hold;
 `MOCK_NO_REGISTRY=1` omits the Stalwart capability so the sign-in refusal can be
 tested.
+
+Administration works against it too, with a directory of about thirty accounts,
+three domains with their DKIM keys and zone files, behind the same permission
+names Stalwart uses. `MOCK_ROLE` decides who the
+demo user is: `admin` (the default), `tenant-admin`, `helpdesk` — a custom role
+that may view and edit accounts but not create or delete them — or `user`, who
+is not offered the menu at all.
 
 ---
 

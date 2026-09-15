@@ -6,9 +6,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { signedMessage, type SIGNED_MESSAGES } from "./signedMessages.js";
-import { expandOccurrences, occurrenceAt, occurrenceView, parseSyntheticId, splitOccurrencePatch, syntheticId, type Occurrence } from "./recurrence.js";
+import { eventGetView, expandOccurrences, occurrenceAt, occurrenceView, parseSyntheticId, splitOccurrencePatch, syntheticId, type Occurrence } from "./recurrence.js";
 import { parseOtpauthUrl, verifyTotp } from "../totp.js";
 import { holdUntilOf, undoStatusOf } from "./futurerelease.js";
+import { createDirectory, mockRole } from "./directory.js";
 
 const PORT = Number(process.env.MOCK_PORT ?? 8788);
 /**
@@ -885,6 +886,15 @@ function matchSubmissionFilter(sub: Obj, f: Obj | undefined): boolean {
   return true;
 }
 
+/** Who the demo user is, for administration. See mock/directory.ts. */
+const directory = createDirectory({
+  accountId: ACCOUNT,
+  user: USER,
+  locale: MOCK_LOCALE,
+  role: mockRole(process.env.MOCK_ROLE),
+  fail: (type, description) => new MethodError(type, description),
+});
+
 const handlers: Record<string, Handler> = {
   // 0.16 exposes the account locale here, under a permission ordinary users
   // actually have (unlike x:Account below, which needs sysAccountGet).
@@ -893,12 +903,10 @@ const handlers: Record<string, Handler> = {
     const list = ids.filter((id) => id === "singleton").map((id) => ({ id, locale: MOCK_LOCALE, timeZone: null, description: null }));
     return { accountId: ACCOUNT, state: String(state.n), list: list.map((x) => pick(x, a.properties as string[] | null)), notFound: ids.filter((id) => id !== "singleton") };
   },
-  // Stalwart's directory extension - the client reads the account locale from here.
-  "x:Account/get": (a) => {
-    const ids = (a.ids as string[] | null) ?? [ACCOUNT];
-    const list = ids.filter((id) => id === ACCOUNT).map((id) => ({ id, name: USER, locale: MOCK_LOCALE, timeZone: null }));
-    return { accountId: ACCOUNT, state: String(state.n), list, notFound: ids.filter((id) => id !== ACCOUNT) };
-  },
+  // Stalwart's directory registry: accounts, domains and roles, behind the
+  // same permissions as the real thing. The locale fallback reads x:Account
+  // too, and is refused here exactly when a real server would refuse it.
+  ...directory.handlers,
   "Mailbox/get": (a) => hideShareWithUnlessAsked(a, genericGet(mailboxes)(a) as { list: Obj[] }) as never,
   "Mailbox/set": (a) => { const r = genericSet(mailboxes, "m", (o) => Object.assign(o, { ...mb(o.id as string, o.name as string, null, (o.parentId as string) ?? null), ...o }))(a); recount(); return r; },
   "Mailbox/changes": () => ({ accountId: ACCOUNT, oldState: "1", newState: String(state.n), hasMoreChanges: false, created: [], updated: [], destroyed: [] }),
@@ -1255,15 +1263,17 @@ const handlers: Record<string, Handler> = {
   "CalendarEvent/get": (a) => {
     const list = eventsFor(a.accountId);
     const ids = a.ids as string[] | null | undefined;
-    if (!ids) return genericGet(list)(a);
+    const properties = a.properties as string[] | null | undefined;
+    // With no ids every event comes back under its stored id, none synthetic.
+    if (!ids) return { accountId: ACCOUNT, state: String(state.n), list: list.map((x) => eventGetView(x, false, properties)), notFound: [] };
     const found: Obj[] = [];
     const notFound: string[] = [];
     for (const id of ids) {
       const resolved = resolveEvent(list, id);
       if (!resolved) { notFound.push(id); continue; }
-      found.push(resolved.occ ? occurrenceView(resolved.base, resolved.occ) : resolved.base);
+      found.push(resolved.occ ? eventGetView(occurrenceView(resolved.base, resolved.occ), true, properties) : eventGetView(resolved.base, false, properties));
     }
-    return { accountId: ACCOUNT, state: String(state.n), list: found.map((x) => pick(x, a.properties as string[] | null)), notFound };
+    return { accountId: ACCOUNT, state: String(state.n), list: found, notFound };
   },
   // Stalwart 0.16 rejects the RFC 8984 array outright and silently discards
   // participants addressed the RFC 8984 way. The mock did neither, which is how
@@ -1303,6 +1313,8 @@ const handlers: Record<string, Handler> = {
     return genericSet(booksFor(a.accountId), "ab", (o) => Object.assign(o, { description: null, sortOrder: 0, isDefault: false, isSubscribed: true, shareWith: {}, myRights: abRights(), ...o }))(a);
   },
   "ContactCard/query": (a) => { const list = a.accountId === SHARED_ACCOUNT ? sharedCards : cards; return { accountId: a.accountId ?? ACCOUNT, queryState: "1", canCalculateChanges: false, position: 0, ids: list.map((c) => c.id), total: list.length }; },
+  // An empty `properties` list returns `id` alone, which `pick` already does.
+  // 0.16.22 made Stalwart agree; through 0.16.21 it returned every property.
   "ContactCard/get": (a) => genericGet(a.accountId === SHARED_ACCOUNT ? sharedCards : cards)(a),
   "ContactCard/set": genericSet(cards, "cc"),
   "ContactCard/parse": (a) => { const parsed: Obj = {}; for (const b of a.blobIds as string[]) { const t = blobs.get(b)?.data.toString() ?? ""; const fn = /^FN:(.*)$/m.exec(t)?.[1]?.trim() ?? "Imported"; const em = /^EMAIL[^:]*:(.*)$/m.exec(t)?.[1]?.trim(); parsed[b] = [{ "@type": "Card", version: "1.0", uid: randomUUID(), kind: "individual", name: { full: fn }, emails: em ? { e1: { address: em } } : undefined }]; } return { accountId: ACCOUNT, parsed, notParsable: [] }; },
@@ -1413,7 +1425,7 @@ export const server = createServer(async (req, res) => {
   // The account info endpoint; the only place a server reports its edition.
   if (url.pathname === "/api/account" && req.method === "GET") {
     res.writeHead(200, { "content-type": "application/json" });
-    return res.end(JSON.stringify({ permissions: ["jmapEmailGet", "sysAccountSettingsGet"], edition: "oss", locale: MOCK_LOCALE }));
+    return res.end(JSON.stringify({ permissions: directory.permissions, edition: "oss", locale: MOCK_LOCALE }));
   }
   if (url.pathname === "/jmap/" && req.method === "POST") {
     const body = JSON.parse((await readBody(req)).toString()) as { methodCalls: [string, Obj, string][]; using?: string[] };

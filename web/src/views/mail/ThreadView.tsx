@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertOctagon, Archive, ArrowLeft, ChevronDown, ChevronUp, FolderInput, Forward, Mail, MailOpen, MailPlus, MoreVertical, Printer, Reply, ReplyAll, ShieldCheck, Star, Tag, Trash2, Download , Paperclip} from "lucide-react";
 import { useMail } from "@/store/mail";
+import { visibleMessages } from "@/lib/openMessage";
 import { useSettings } from "@/store/settings";
 import { useCompose } from "@/store/compose";
 import type { Email, Id } from "@/jmap/types";
@@ -25,9 +26,15 @@ interface Props {
   onNavigate: (delta: number) => void;
   hasPrev: boolean;
   hasNext: boolean;
+  /**
+   * With conversation view off, the single message to show. The thread is still
+   * what loads -- one request, and the reply/forward paths keep the context
+   * they need -- but only this message is rendered.
+   */
+  messageId?: Id | null;
 }
 
-export function ThreadView({ threadId, mailboxId, onBack, actions, onNavigate, hasPrev, hasNext }: Props) {
+export function ThreadView({ threadId, mailboxId, onBack, actions, onNavigate, hasPrev, hasNext, messageId = null }: Props) {
   const loadThread = useMail((s) => s.loadThread);
   const thread = useMail((s) => s.threads[threadId]);
   const emails = useMail((s) => s.emails);
@@ -82,8 +89,9 @@ export function ThreadView({ threadId, mailboxId, onBack, actions, onNavigate, h
       if (junk && e.mailboxIds[junk]) return false;
       return true;
     });
-    return (filtered.length ? filtered : all).sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
-  }, [thread, emails, fullIds, mailboxId]);
+    const shown = filtered.length ? filtered : all;
+    return visibleMessages(shown, messageId).sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
+  }, [thread, emails, fullIds, mailboxId, messageId]);
 
   /*
    * Which messages were unread when this conversation was opened.
@@ -237,17 +245,17 @@ export function ThreadView({ threadId, mailboxId, onBack, actions, onNavigate, h
           <ArrowLeft size={20} />
         </button>
         <button className="icon-btn" title={t("Archive (e)")} onClick={() => void actions.archive(rowIds)}><Archive size={19} /></button>
-        <button className="icon-btn" title={inJunk ? "Not spam" : "Report spam (!)"} onClick={() => void actions.spam(rowIds)}>{inJunk ? <ShieldCheck size={19} /> : <AlertOctagon size={19} />}</button>
+        <button className="icon-btn" title={inJunk ? t("Not spam") : t("Report spam (!)")} onClick={() => void actions.spam(rowIds)}>{inJunk ? <ShieldCheck size={19} /> : <AlertOctagon size={19} />}</button>
         <button className="icon-btn" title={t("Delete (#)")} onClick={() => void actions.trash(rowIds)}><Trash2 size={19} /></button>
         <span className="tb-sep hide-mobile" />
-        <button className="icon-btn hide-mobile" title={anyUnread ? "Mark as read" : "Mark as unread"} onClick={() => void actions.read(anyUnread, rowIds)}>{anyUnread ? <MailOpen size={19} /> : <Mail size={19} />}</button>
+        <button className="icon-btn hide-mobile" title={anyUnread ? t("Mark as read") : t("Mark as unread")} onClick={() => void actions.read(anyUnread, rowIds)}>{anyUnread ? <MailOpen size={19} /> : <Mail size={19} />}</button>
         <button className="icon-btn hide-mobile" title={t("Move to (v)")} onClick={() => actions.move(rowIds)}><FolderInput size={19} /></button>
         <button className="icon-btn hide-mobile" title={t("Labels (l)")} onClick={(e) => setLabelAnchor({ x: e.clientX, y: e.clientY })}><Tag size={19} /></button>
         <button className="icon-btn" onClick={moreMenu.open} aria-label={t("More")}><MoreVertical size={19} /></button>
         <Popover anchor={moreMenu.anchor} onClose={moreMenu.close} align="start" width={240}>
-          <MenuItem icon={<Star size={16} />} label={anyStarred ? "Remove star" : "Add star"} onClick={() => void actions.star(!anyStarred, rowIds)} />
+          <MenuItem icon={<Star size={16} />} label={anyStarred ? t("Remove star") : t("Add star")} onClick={() => void actions.star(!anyStarred, rowIds)} />
           <MenuItem icon={<Tag size={16} />} label={t("Label…")} onClick={() => setLabelAnchor({ x: window.innerWidth / 2, y: 100 })} />
-          <MenuItem icon={allExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />} label={allExpanded ? "Collapse all" : "Expand all"} onClick={() => { setAllExpanded((v) => !v); setExpanded({}); }} />
+          <MenuItem icon={allExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />} label={allExpanded ? t("Collapse all") : t("Expand all")} onClick={() => { setAllExpanded((v) => !v); setExpanded({}); }} />
           <MenuSep />
           <MenuItem icon={<Printer size={16} />} label={t("Print conversation")} onClick={() => window.print()} />
           {last && accountId && (

@@ -18,7 +18,7 @@ import { internalDomains, isExternalSender, linkVerdict } from "@/lib/warnings";
 import { spamReport, type SpamReport } from "@/lib/spamScore";
 import { formatFullDate, formatListDate, formatSize } from "@/lib/format";
 import { displayName, domainOf, formatAddress } from "@/lib/address";
-import { EMAIL_BASE_CSS, TEXT_EMAIL_CSS, htmlDeclaresColors, markKeptSurfaces, sanitizeEmailHtml } from "@/lib/html";
+import { EMAIL_BASE_CSS, TEXT_EMAIL_CSS, hasHtmlAlternative, htmlDeclaresColors, markKeptSurfaces, sanitizeEmailHtml } from "@/lib/html";
 import { openableInTab, previewKind } from "@/lib/preview";
 import { FilePreviewDialog } from "@/ui/filepreview";
 import { findQuoteStart, htmlToText, textToHtml } from "@/lib/text";
@@ -137,7 +137,9 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
   const textPart = e.textBody?.[0];
   const htmlRaw = htmlPart?.partId ? e.bodyValues?.[htmlPart.partId]?.value : undefined;
   const textRaw = textPart?.partId ? e.bodyValues?.[textPart.partId]?.value : undefined;
-  const showHtml = Boolean(htmlRaw);
+  // Not `Boolean(htmlRaw)`: `htmlBody` carries the text part when there is no
+  // HTML alternative. See hasHtmlAlternative().
+  const showHtml = hasHtmlAlternative(htmlPart, htmlRaw);
   const themeMessageBody = settings.themeMessageBody;
   const themeStyledMessages = settings.themeStyledMessages;
 
@@ -336,7 +338,7 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
             the other three rather than down among the read-only actions. */}
         <MenuItem icon={<MailPlus size={16} />} label={translate("Compose as new")} onClick={() => void useCompose.getState().composeAsNew(e)} />
         <MenuSep />
-        <MenuItem icon={<Mail size={16} />} label={e.keywords.$seen ? "Mark as unread" : "Mark as read"} onClick={() => void useMail.getState().markRead([e.id], !e.keywords.$seen)} />
+        <MenuItem icon={<Mail size={16} />} label={e.keywords.$seen ? translate("Mark as unread") : translate("Mark as read")} onClick={() => void useMail.getState().markRead([e.id], !e.keywords.$seen)} />
         <MenuItem icon={<Trash2 size={16} />} label={translate("Delete this message")} onClick={() => void useMail.getState().trash([e.id])} />
         <MenuSep />
         <MenuItem icon={<Eye size={16} />} label={translate("Show original")} onClick={() => void openSource()} />
@@ -349,7 +351,7 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
         {from && (
           <>
             <MenuSep />
-            <MenuItem icon={<Ban size={16} />} label={senderTrusted ? "Stop trusting sender images" : "Always show images from sender"} onClick={() => updateSettings({ trustedImageSenders: senderTrusted ? settings.trustedImageSenders.filter((x) => x !== from.email.toLowerCase()) : [...settings.trustedImageSenders, from.email.toLowerCase()] })} />
+            <MenuItem icon={<Ban size={16} />} label={senderTrusted ? translate("Stop trusting sender images") : translate("Always show images from sender")} onClick={() => updateSettings({ trustedImageSenders: senderTrusted ? settings.trustedImageSenders.filter((x) => x !== from.email.toLowerCase()) : [...settings.trustedImageSenders, from.email.toLowerCase()] })} />
           </>
         )}
       </Popover>
@@ -886,7 +888,7 @@ function AttachmentList({ attachments, accountId, email }: { attachments: EmailB
           const url = a.blobId ? client.downloadUrl(accountId, a.blobId, a.name ?? "attachment", a.type) : "#";
           const inlineUrl = a.blobId ? client.downloadUrl(accountId, a.blobId, a.name ?? "attachment", a.type, true) : "#";
           return (
-            <a key={a.blobId ?? i} className="attachment" href={url} download={a.name ?? undefined} title={`${a.name ?? "attachment"} (${formatSize(a.size)})`} onClick={(ev) => { if (viewable(a)) { ev.preventDefault(); setPreview(a); } }}>
+            <a key={a.blobId ?? i} className="attachment" href={url} download={a.name ?? undefined} title={`${a.name ?? translate("Attachment")} (${formatSize(a.size)})`} onClick={(ev) => { if (viewable(a)) { ev.preventDefault(); setPreview(a); } }}>
               <span className="att-icon">{a.type.startsWith("image/") && a.type !== "image/svg+xml" && a.blobId ? <img src={inlineUrl} alt="" loading="lazy" /> : attachmentIcon(a.type, a.name)}</span>
               <span className="att-text">
                 <span className="att-name">{a.name ?? "(unnamed)"}</span>

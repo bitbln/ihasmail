@@ -369,7 +369,7 @@ function FolderRow({ mailbox: m, label, depth, hasChildren, open, hiddenUnread, 
       </span>
       <span className="folder-icon" style={tint ? ({ "--folder-color": tint } as React.CSSProperties) : undefined}>{icon}</span>
       <span className="nav-label">{label}</span>
-      {count > 0 && <span className="nav-count" title={hiddenUnread ? `${own} here, ${hiddenUnread} in subfolders` : undefined}>{count > 9999 ? "9999+" : count}</span>}
+      {count > 0 && <span className="nav-count" title={hiddenUnread ? t("{here} here, {inSubfolders} in subfolders", { here: own, inSubfolders: hiddenUnread }) : undefined}>{count > 9999 ? "9999+" : count}</span>}
       {count > 0 && <span className="nav-dot" />}
       <button
         className="icon-btn nav-more"
@@ -471,7 +471,7 @@ function MailboxMenu({ mailbox: m, onClose, onCreateChild, onShare }: { mailbox:
       )}
       <MenuItem icon={<FolderPlus size={16} />} label={t("New subfolder")} onClick={onCreateChild} disabled={!m.myRights.mayCreateChild} />
       <MenuItem icon={<Pencil size={16} />} label={t("Rename")} onClick={() => void rename()} disabled={isSpecial || !m.myRights.mayRename} />
-      <MenuItem icon={m.isSubscribed ? <EyeOff size={16} /> : <Eye size={16} />} label={m.isSubscribed ? "Hide from list" : "Show in list"} onClick={() => void useMail.getState().updateMailbox(m.id, { isSubscribed: !m.isSubscribed })} disabled={m.role === "inbox"} />
+      <MenuItem icon={m.isSubscribed ? <EyeOff size={16} /> : <Eye size={16} />} label={m.isSubscribed ? t("Hide from list") : t("Show in list")} onClick={() => void useMail.getState().updateMailbox(m.id, { isSubscribed: !m.isSubscribed })} disabled={m.role === "inbox"} />
       {/* Sharing a mail folder is withdrawn, not removed: Stalwart accepts and
           stores the share, and it never reaches the other account -- its own
           docs list calendars, address books and files as shareable and not mail

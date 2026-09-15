@@ -1282,8 +1282,17 @@ a.menu-item:hover { color: var(--fg); }
 @keyframes push-pulse { 50% { opacity: .45; } }
 @media (prefers-reduced-motion: reduce) { .push-dot.connecting { animation: none; } }
 
-.app-body { display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); min-height: 0; transition: grid-template-columns .2s var(--ease); }
+.app-body { position: relative; display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); min-height: 0; transition: grid-template-columns .2s var(--ease); }
 .app-body.collapsed { grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr); }
+/* A drag follows the pointer; the ease is for the collapse toggle, and applied
+   to every frame of a drag it leaves the edge trailing behind the hand. */
+.app-body.resizing, .app-body.resizing > .sidebar-splitter { transition: none; }
+/* The sidebar edge (#345). Laid over the seam rather than given a grid column:
+   the sidebar and the content meet at the content's own border, and a 6px
+   bar of border colour between them would draw a line the design never had.
+   Out of the flow, it shows only on hover and focus, like the list splitter. */
+.app-body > .sidebar-splitter { position: absolute; top: 0; bottom: 0; left: calc(var(--sidebar-w) - 3px); background: transparent; transition: left .2s var(--ease); }
+.app-body > .sidebar-splitter:hover, .app-body > .sidebar-splitter:focus-visible { background: var(--accent); }
 .sidebar { display: flex; flex-direction: column; min-height: 0; padding: 4px 8px 8px 8px; gap: 2px; overflow: hidden; }
 .sidebar-scroll { overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; padding-bottom: 8px; }
 .compose-btn { display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 22px 0 18px; margin: 6px 4px 12px; border-radius: 16px; background: var(--bg-elev); box-shadow: var(--shadow-1); font-weight: 600; font-size: 1em; color: var(--fg); transition: box-shadow .15s, transform .05s, background .12s; white-space: nowrap; }
@@ -1547,7 +1556,13 @@ a.menu-item:hover { color: var(--fg); }
 .composer-dock { position: fixed; right: 16px; bottom: 0; display: flex; align-items: flex-end; gap: 12px; z-index: 955; pointer-events: none; }
 .composer { pointer-events: auto; width: 580px; max-width: calc(100vw - 32px); height: 600px; max-height: calc(100vh - 24px); display: flex; flex-direction: column; background: var(--bg-elev); border-radius: var(--radius-lg) var(--radius-lg) 0 0; box-shadow: var(--shadow-3); border: 1px solid var(--border); border-bottom: 0; overflow: hidden; animation: rise .2s var(--ease); }
 .composer.minimized { height: 44px; width: 280px; }
-.composer.maximized { position: fixed; inset: 24px; width: auto; height: auto; max-width: none; max-height: none; border-radius: var(--radius-lg); border-bottom: 1px solid var(--border); }
+/* Full screen is still a child of the dock, so without a layer of its own the
+   positioned parts of any composer after it in the DOM (its recipients row,
+   its editor) would paint straight over it. The others are hidden while one
+   is full screen: they cannot be reached anyway, and the strip left under the
+   24px inset would otherwise show their footers. */
+.composer.maximized { position: fixed; inset: 24px; z-index: 1; width: auto; height: auto; max-width: none; max-height: none; border-radius: var(--radius-lg); border-bottom: 1px solid var(--border); }
+.composer-dock.has-maximized > .composer:not(.maximized) { display: none; }
 .composer-head { display: flex; align-items: center; gap: 4px; height: 44px; padding: 0 6px 0 14px; background: var(--bg-sunken); border-bottom: 1px solid var(--border); flex: 0 0 auto; cursor: default; }
 .composer-head .title { flex: 1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .composer-head .status { color: var(--fg-faint); font-size: .8em; margin-right: 6px; white-space: nowrap; }
@@ -1666,6 +1681,74 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
 .sessions-table { width: 100%; border-collapse: collapse; font-size: .92em; }
 .sessions-table th, .sessions-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
 .sessions-table th { color: var(--fg-muted); font-weight: 600; font-size: .85em; }
+
+/* ==========================================================================
+   Administration
+   Settings' layout, with a table for the list and a panel beside it for the
+   one that is open. The panel is positioned against the layout rather than the
+   scrolling content, so it stays put while the list scrolls under it.
+   ========================================================================== */
+/* One column: the section list is in the folder pane (AdminNav), so the
+   table gets the width a second column would take. The height and scrolling
+   are what .settings-layout gave it. */
+.admin-layout { position: relative; height: 100%; min-height: 0; flex: 1; display: flex; flex-direction: column; }
+.admin-content { max-width: 1120px; flex: 1; min-height: 0; }
+.admin-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.admin-head .grow { min-width: 220px; }
+.admin-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+.admin-search { position: relative; flex: 1; max-width: 360px; }
+.admin-search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--fg-faint); pointer-events: none; }
+.admin-search .input { width: 100%; padding-left: 34px; }
+.admin-table-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; }
+.admin-table { width: 100%; border-collapse: collapse; font-size: .93em; }
+.admin-table th { text-align: left; padding: 9px 12px; font-size: .78em; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-faint); background: var(--bg-sunken); border-bottom: 1px solid var(--border); white-space: nowrap; }
+.admin-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.admin-table tbody tr:last-child td { border-bottom: 0; }
+.admin-table tbody tr { cursor: pointer; }
+.admin-table tbody tr:hover { background: var(--bg-hover); }
+.admin-table tbody tr.selected { background: var(--bg-active); }
+.admin-table tbody tr:focus-visible { outline: none; box-shadow: inset var(--focus-ring); }
+.admin-who { display: flex; align-items: center; gap: 10px; min-width: 200px; }
+.admin-who-name { font-weight: 550; display: flex; align-items: center; gap: 6px; }
+.admin-groups { display: block; max-width: 180px; }
+.admin-role { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 999px; font-size: .85em; font-weight: 550; white-space: nowrap; background: var(--bg-sunken); color: var(--fg-muted); }
+.admin-role.admin { background: var(--accent-soft); color: var(--accent-soft-fg); }
+.admin-role.custom { background: transparent; border: 1px solid var(--border-strong); }
+.admin-meter { min-width: 120px; }
+.admin-meter .quota-bar { margin: 0 0 4px; }
+.admin-pager { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 8px; }
+.admin-pager .hint { margin-right: 8px; font-variant-numeric: tabular-nums; }
+.admin-count { margin-top: 8px; }
+.admin-notice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bg-sunken); color: var(--fg-muted); font-size: .92em; margin: 8px 0; }
+.admin-notice svg { flex: none; margin-top: 2px; }
+.admin-notice.warn { background: var(--warn-soft); color: var(--fg); }
+.admin-notice.warn svg { color: var(--warn); }
+.admin-notice.error { background: var(--danger-soft); color: var(--fg); }
+.admin-sheet { position: absolute; top: 0; right: 0; bottom: 0; width: min(460px, 100%); z-index: 20; display: flex; flex-direction: column; background: var(--bg-elev); border-left: 1px solid var(--border); box-shadow: var(--shadow-3); animation: admin-sheet-in .18s var(--ease); }
+@keyframes admin-sheet-in { from { transform: translateX(24px); opacity: 0; } }
+.admin-sheet-head { display: flex; align-items: center; gap: 12px; padding: 14px 12px 12px 20px; border-bottom: 1px solid var(--border); }
+.admin-sheet-head h2 { margin: 0; padding: 0; border: 0; font-size: 1.1em; font-weight: 650; }
+.admin-sheet-body { flex: 1; overflow-y: auto; padding: 4px 20px 24px; }
+.admin-sheet-body h3 { margin: 22px 0 10px; font-size: .78em; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-faint); }
+.admin-sheet-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border); }
+.admin-address .input:first-child { flex: 0 1 160px; min-width: 0; }
+.admin-address select.input { flex: 1; min-width: 0; }
+.admin-wide { width: 100%; }
+.admin-narrow { max-width: 140px; }
+.admin-danger { border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); border-radius: var(--radius); padding: 12px 14px; }
+.admin-danger p { margin: 0 0 10px; color: var(--fg-muted); font-size: .92em; }
+.admin-danger-btn { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.admin-danger-btn:hover:not(:disabled) { background: var(--danger-soft); }
+.admin-dns { border: 1px solid var(--border); border-radius: var(--radius); }
+.admin-dns-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 8px 8px 10px; border-bottom: 1px solid var(--border); }
+.admin-dns-row:last-child { border-bottom: 0; }
+.admin-dns-type { flex: 0 0 48px; font-family: var(--font-mono); font-size: .78em; font-weight: 700; color: var(--accent-soft-fg); padding-top: 2px; }
+.admin-dns-name { font-size: .88em; font-weight: 550; word-break: break-all; }
+.admin-dns-value { display: block; font-family: var(--font-mono); font-size: .8em; color: var(--fg-muted); word-break: break-all; margin-top: 2px; max-height: 4.8em; overflow: hidden; }
+.admin-kv { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; align-items: center; margin: 0; font-size: .92em; }
+.admin-kv dt { color: var(--fg-muted); }
+.admin-kv dd { margin: 0; }
+@media (prefers-reduced-motion: reduce) { .admin-sheet { animation: none; } }
 
 /* ==========================================================================
    Contacts
@@ -1950,6 +2033,8 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
   .settings-layout.root .settings-nav { display: block; border-right: 0; }
   .settings-layout.root .settings-content { display: none; }
   .settings-content { --pad-b: 80px; padding: 16px 16px var(--pad-b); }
+  .admin-table .hide-mobile { display: none; }
+  .admin-sheet { width: 100%; border-left: 0; box-shadow: none; }
   .contacts-layout { grid-template-columns: 1fr; }
   .contacts-books { display: none; }
   .contacts-layout.detail .contacts-list { display: none; }

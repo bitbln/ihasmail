@@ -8,6 +8,7 @@ import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { attach as pushAttach, attachRelay as pushAttachRelay, prepare as pushPrepare, receive as pushReceive, pushStatus } from "./push.js";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { config } from "./config.js";
+import { administrationAllowed, gateAdministration, grantsAdministration } from "./adminGate.js";
 import { SessionStore, type SessionBackend, type LiveSession } from "./sessions.js";
 import { RateLimiter } from "./ratelimit.js";
 import { resolveClientIp } from "./clientip.js";
@@ -459,7 +460,11 @@ export function createApp(basePath = config.basePath): Hono<Env> {
    */
   const accountCtx = async (c: Context<Env>) => {
     const session = c.get("session");
-    const upstream = await getUpstreamSession(session.id, session.authorization);
+    // The account's own server. Without it, the first fetch after the cached
+    // session expires goes to STALWART_URL -- which, for a domain mapped
+    // elsewhere, either refuses the password or knows a different account by
+    // the same name (#238).
+    const upstream = await getUpstreamSession(session.id, session.authorization, upstreamFor(session.username));
     return { authorization: session.authorization, session: upstream, username: session.username };
   };
 
@@ -633,6 +638,30 @@ export function createApp(basePath = config.basePath): Hono<Env> {
     if (!ct.toLowerCase().startsWith("application/json")) {
       return c.json({ error: "unsupported_media_type" }, 415);
     }
+    /*
+     * For a session that may not administer -- administration switched off, or
+     * a device not marked as the person's own -- the body is read and checked
+     * before it goes anywhere. A session that may streams straight through as
+     * it always has, and pays nothing for this.
+     */
+    let body: ReadableStream<Uint8Array> | string | null = c.req.raw.body;
+    if (!administrationAllowed(config.administration, session.remember)) {
+      let raw: string;
+      try {
+        // Counted as it arrives: a chunked body carries no length to refuse up front.
+        raw = c.req.raw.body ? await new Response(c.req.raw.body.pipeThrough(byteCap(MAX_GATED_REQUEST))).text() : "";
+      } catch {
+        return c.json({ error: "too_large" }, 413);
+      }
+      const gate = gateAdministration(raw);
+      if (!gate.ok) {
+        if (!gate.method) return c.json({ error: "bad_request", message: "Not a JMAP request." }, 400);
+        return config.administration
+          ? c.json({ error: "administration_needs_own_device", message: `Administration is only available when signed in on a device marked as your own (${gate.method}).` }, 403)
+          : c.json({ error: "administration_disabled", message: `Administration is turned off on this installation (${gate.method}).` }, 403);
+      }
+      body = gate.body;
+    }
     try {
       const upstream = await getUpstreamSession(session.id, session.authorization, upstreamFor(session.username));
       const res = await fetch(absoluteUpstream(upstream.apiUrl, upstream.baseUrl), {
@@ -642,7 +671,7 @@ export function createApp(basePath = config.basePath): Hono<Env> {
           "content-type": "application/json",
           accept: "application/json",
         },
-        body: c.req.raw.body,
+        body,
         duplex: "half",
         signal: AbortSignal.timeout(config.upstreamTimeout),
       });
@@ -824,7 +853,7 @@ function appPasswordName(c: Context): string {
   return `${config.appName} (${browser})`;
 }
 
-function sessionExtras(session: LiveSession, info: AccountInfo = { locale: null, edition: null }) {
+function sessionExtras(session: LiveSession, info: AccountInfo = { locale: null, edition: null, permissions: [] }) {
   return {
     ihasmail: {
       appName: config.appName,
@@ -838,6 +867,24 @@ function sessionExtras(session: LiveSession, info: AccountInfo = { locale: null,
       userLocale: info.locale,
       /** What the upstream server would tell us about itself. */
       server: { edition: info.edition },
+      /**
+       * Whether this session may administer: the installation offers it
+       * (ADMINISTRATION) and the person signed in on a device marked as their own.
+       */
+      administration: administrationAllowed(config.administration, session.remember),
+      /**
+       * An administrator signed in on a device not marked as their own, so the
+       * menu can say why Administration is unavailable rather than lose it
+       * without a word. Says only that the account administers, never what it
+       * may do.
+       */
+      administrationNeedsOwnDevice: config.administration && !session.remember && grantsAdministration(info.permissions),
+      /**
+       * The account's permissions on that server, so the client can offer
+       * administration to those who have it. Stalwart still decides every call.
+       * Withheld from a session that may not administer: nothing in it needs them.
+       */
+      permissions: administrationAllowed(config.administration, session.remember) ? info.permissions : [],
     },
   };
 }
@@ -847,6 +894,12 @@ function sessionExtras(session: LiveSession, info: AccountInfo = { locale: null,
  * denylist: everything else it might set — cookies, auth challenges, CORS
  * grants — would be landing on *our* origin, where it means something else.
  */
+/**
+ * The largest JMAP request read into memory for the administration check.
+ * Stalwart's own default `maxSizeRequest` is 10 MB; uploads never come this way.
+ */
+const MAX_GATED_REQUEST = 16 * 1024 * 1024;
+
 const PASSTHROUGH_HEADERS = new Set(["content-type", "content-disposition", "content-language", "etag", "last-modified", "retry-after"]);
 
 /**

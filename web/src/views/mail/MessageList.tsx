@@ -9,6 +9,7 @@ import { formatListDate } from "@/lib/format";
 import { mailboxDisplayName } from "@/lib/mailboxName";
 import { groupByArchivePath, archivePath, type ArchiveGranularity } from "@/lib/archiveDate";
 import { canEmpty, confirmAndEmpty, emptyLabel } from "@/lib/emptyFolder";
+import { rowIsOpen } from "@/lib/openMessage";
 import { displayName, shortName } from "@/lib/address";
 import { Avatar, Empty, useIsMobile, useIsTouch } from "@/ui/misc";
 import { rowClick } from "@/lib/listSelection";
@@ -53,6 +54,12 @@ interface Props {
   title: string;
   list: ListState | null;
   openThreadId: Id | null;
+  /**
+   * With conversation view off, the one message the reading pane is showing.
+   * The row highlight follows this instead of the thread, or every message in
+   * a thread lights up when one of them is opened.
+   */
+  openMessageId: Id | null;
   focusId: Id | null;
   setFocusId: (id: Id | null) => void;
   onOpen: (rowId: Id) => void;
@@ -61,7 +68,7 @@ interface Props {
   isSearch: boolean;
 }
 
-export function MessageList({ title, list, openThreadId, focusId, setFocusId, onOpen, actions, mailboxId, isSearch }: Props) {
+export function MessageList({ title, list, openThreadId, openMessageId, focusId, setFocusId, onOpen, actions, mailboxId, isSearch }: Props) {
   const [, navigate] = useLocation();
   const emails = useMail((s) => s.emails);
   const threads = useMail((s) => s.threads);
@@ -292,7 +299,7 @@ export function MessageList({ title, list, openThreadId, focusId, setFocusId, on
                 <Popover anchor={selMenu.anchor} onClose={selMenu.close} align="end" width={240}>
                   <MenuItem
                     icon={mailbox?.role === "junk" ? <ShieldCheck size={16} /> : <AlertOctagon size={16} />}
-                    label={mailbox?.role === "junk" ? "Not spam" : "Report spam"}
+                    label={mailbox?.role === "junk" ? t("Not spam") : t("Report spam")}
                     onClick={() => void actions.spam()}
                   />
                   <MenuItem icon={<Mail size={16} />} label={t("Mark as unread")} onClick={() => void actions.read(false)} />
@@ -485,7 +492,7 @@ export function MessageList({ title, list, openThreadId, focusId, setFocusId, on
                       height={vi.size}
                       selected={Boolean(selected[id])}
                       focused={focusId === id}
-                      open={openThreadId === e.threadId}
+                      open={rowIsOpen(id, e.threadId, openMessageId, openThreadId)}
                       twoLine={twoLine}
                       showAvatar={settings.showAvatars}
                       showPreview={settings.showPreview}
@@ -525,10 +532,10 @@ export function MessageList({ title, list, openThreadId, focusId, setFocusId, on
         <MenuItem icon={<CalendarRange size={16} />} label={archiveDateLabel("year")} onClick={() => void useMail.getState().archiveByDate(ctxTargets, "year")} />
         <MenuItem icon={<CalendarDays size={16} />} label={archiveDateLabel("month")} onClick={() => void useMail.getState().archiveByDate(ctxTargets, "month")} />
         <MenuItem icon={<Trash2 size={16} />} label={t("Delete")} kbd="#" onClick={() => void actions.trash(ctxTargets)} />
-        <MenuItem icon={<AlertOctagon size={16} />} label={mailbox?.role === "junk" ? "Not spam" : "Report spam"} kbd="!" onClick={() => void actions.spam(ctxTargets)} />
+        <MenuItem icon={<AlertOctagon size={16} />} label={mailbox?.role === "junk" ? t("Not spam") : t("Report spam")} kbd="!" onClick={() => void actions.spam(ctxTargets)} />
         <MenuSep />
-        <MenuItem icon={someUnread ? <MailOpen size={16} /> : <Mail size={16} />} label={someUnread ? "Mark as read" : "Mark as unread"} onClick={() => void actions.read(someUnread, ctxTargets)} />
-        <MenuItem icon={<Star size={16} />} label={someUnstarred ? "Add star" : "Remove star"} kbd="s" onClick={() => void actions.star(someUnstarred, ctxTargets)} />
+        <MenuItem icon={someUnread ? <MailOpen size={16} /> : <Mail size={16} />} label={someUnread ? t("Mark as read") : t("Mark as unread")} onClick={() => void actions.read(someUnread, ctxTargets)} />
+        <MenuItem icon={<Star size={16} />} label={someUnstarred ? t("Add star") : t("Remove star")} kbd="s" onClick={() => void actions.star(someUnstarred, ctxTargets)} />
         <MenuItem icon={<FolderInput size={16} />} label={t("Move to…")} kbd="v" onClick={() => actions.move(ctxTargets)} />
         <MenuItem icon={<Tag size={16} />} label={t("Label…")} kbd="l" onClick={() => actions.label(ctxTargets, ctxMenu.anchor ?? { x: 0, y: 0 })} />
         <MenuSep />

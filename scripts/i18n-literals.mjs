@@ -18,7 +18,21 @@
  * string that is neither -- one no catalogue has a key for, which therefore
  * cannot be translated at all, however many languages ship.
  */
-import ts from "typescript";
+/*
+ * The parser, not the compiler.
+ *
+ * TypeScript 7 is the native port: its package ships a `tsc` shim over a Go
+ * binary and nothing else, so `typescript` now exports `version` and
+ * `versionMajorMinor` and no compiler API at all. Every `ts.createSourceFile`
+ * in this directory started throwing "Cannot read properties of undefined
+ * (reading 'Latest')" the day the bump landed, and nothing noticed, because no
+ * workflow runs these.
+ *
+ * `typescript-ast` is an npm alias for the last TypeScript that carries the JS
+ * API (see package.json). It parses; `typescript` still type-checks and builds.
+ * Two entries, two jobs -- not a version someone forgot to remove.
+ */
+import ts from "typescript-ast";
 import { readFileSync, globSync } from "node:fs";
 
 /* Where a string literal in this position is shown to somebody. */
@@ -26,7 +40,13 @@ const UI_PROPS = new Set([
   "title", "message", "label", "confirmLabel", "cancelLabel", "ariaLabel",
   "placeholder", "hint", "occurrenceLabel", "occurrenceHint", "seriesLabel", "seriesHint",
 ]);
-const UI_ATTRS = new Set(["title", "aria-label", "placeholder", "alt"]);
+/*
+ * A JSX attribute is shown whether it lands on an element or on a component:
+ * `<MenuItem label="Collapse all">` renders its label as given, exactly as
+ * `<button title="…">` does. Checking only the DOM spellings let every
+ * component prop through, so the props are checked here too.
+ */
+const UI_ATTRS = new Set(["title", "aria-label", "placeholder", "alt", ...UI_PROPS]);
 const TOASTS = new Set(["error", "success", "info", "show"]);
 const WRAPPERS = ["t", "tc", "tNode", "translate", "plural"];
 const EQUALITY = new Set([
@@ -60,8 +80,15 @@ const keys = new Set();
 const found = [];
 for (const file of globSync("web/src/**/*.{ts,tsx}").filter((f) => !f.includes("__tests__") && !f.includes("/locales/"))) {
   const src = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const report = (node, text) => {
-    if (!looksLikeUi(text) || keys.has(text) || NEVER_TRANSLATED.has(text)) return;
+  /*
+   * `strict` withdraws the catalogue-key exemption. It exists for English held
+   * in a constant and translated where it renders; a literal written straight
+   * into a JSX attribute has no later render site to be translated at -- no
+   * component here passes its props through t() -- so being a key only means
+   * a translation exists that this string never reaches.
+   */
+  const report = (node, text, strict = false) => {
+    if (!looksLikeUi(text) || (!strict && keys.has(text)) || NEVER_TRANSLATED.has(text)) return;
     const { line } = src.getLineAndCharacterOfPosition(node.getStart(src));
     found.push({ file, line: line + 1, text });
   };
@@ -89,14 +116,33 @@ for (const file of globSync("web/src/**/*.{ts,tsx}").filter((f) => !f.includes("
   mark(src);
   const wrapped = exempt;
 
+  /*
+   * English assembled around values: `aria-label={`Remove ${email}`}`.
+   *
+   * The literal cannot be a catalogue key as written, so whether it is a key is
+   * not asked. Neither is looksLikeUi, which reads the opening of a sentence:
+   * `${name} — shared by ${owner}` opens with a value and its words come after.
+   * Any run of letters between the values counts. The only template literals
+   * that reach a UI attribute and are not prose are pure punctuation around
+   * values, like `${name} (${size})`, and those have none.
+   */
+  const reportTemplate = (x) => {
+    const parts = ts.isNoSubstitutionTemplateLiteral(x) ? [x.text] : [x.head.text, ...x.templateSpans.map((s) => s.literal.text)];
+    if (!/[A-Za-z]{2,}/.test(parts.join(""))) return;
+    const { line } = src.getLineAndCharacterOfPosition(x.getStart(src));
+    found.push({ file, line: line + 1, text: parts.join("{}") });
+  };
+  const isTemplate = (x) => ts.isTemplateExpression(x) || ts.isNoSubstitutionTemplateLiteral(x);
+
   const visit = (n) => {
-    if (ts.isPropertyAssignment(n) && ts.isStringLiteral(n.initializer) && !wrapped.has(n.initializer)
-        && UI_PROPS.has(n.name.getText(src).replace(/['"]/g, ""))) {
-      report(n.initializer, n.initializer.text);
+    if (ts.isPropertyAssignment(n) && UI_PROPS.has(n.name.getText(src).replace(/['"]/g, ""))) {
+      if (ts.isStringLiteral(n.initializer) && !wrapped.has(n.initializer)) report(n.initializer, n.initializer.text);
+      if (isTemplate(n.initializer)) reportTemplate(n.initializer);
     }
     if (ts.isJsxAttribute(n) && n.initializer && UI_ATTRS.has(n.name.getText(src))) {
       const walk = (x) => {
-        if (ts.isStringLiteral(x) && !wrapped.has(x)) report(x, x.text);
+        if (isTemplate(x)) reportTemplate(x);
+        if (ts.isStringLiteral(x) && !wrapped.has(x)) report(x, x.text, true);
         if (!ts.isCallExpression(x)) ts.forEachChild(x, walk);
       };
       walk(n.initializer);
