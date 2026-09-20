@@ -1,27 +1,30 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Download, ExternalLink, Forward, MailPlus, MoreVertical, Printer, Reply, ReplyAll, Star, Trash2, Code, FileText, Image as ImageIcon, File as FileIcon, Eye, Calendar, CalendarPlus, UserPlus, ShieldAlert, Mail, Ban, Clock, CheckCheck, Paperclip, FileArchive, FileSpreadsheet, Film, Music, Filter, Share2 } from "lucide-react";
 import { useLocation } from "wouter";
-import { FilterFromMessageDialog } from "./FilterFromMessage";
 import type { Email, EmailAddress, EmailBodyPart, Id } from "@/jmap/types";
 import { useMail } from "@/store/mail";
 import { useSettings } from "@/store/settings";
 import { draftFromMailto, useCompose } from "@/store/compose";
 import { useContacts } from "@/store/contacts";
 import { useCalendar } from "@/store/calendar";
-import { startAppointment } from "@/lib/appointment";
+import { startAppointment } from "@/lib/calendar/appointment";
 import { client } from "@/jmap/client";
 import { SignatureBanner } from "./SignatureBanner";
 import { useSignature } from "@/lib/smime/useSignature";
-import { emlFilename } from "@/lib/emlName";
+import { emlFilename } from "@/lib/text/emlName";
 import { isTnef, parseTnef, type TnefAttachment } from "@/lib/tnef";
 import { internalDomains, isExternalSender, linkVerdict } from "@/lib/warnings";
 import { spamReport, type SpamReport } from "@/lib/spamScore";
 import { formatFullDate, formatListDate, formatSize } from "@/lib/format";
 import { displayName, domainOf, formatAddress } from "@/lib/address";
-import { EMAIL_BASE_CSS, TEXT_EMAIL_CSS, hasHtmlAlternative, htmlDeclaresColors, markKeptSurfaces, sanitizeEmailHtml } from "@/lib/html";
+import { remoteImagesAllowed } from "@/lib/mail/remoteImages";
+import { EMAIL_BASE_CSS, TEXT_EMAIL_CSS, hasHtmlAlternative, htmlDeclaresColors, markKeptSurfaces, sanitizeEmailHtml } from "@/lib/text/html";
 import { openableInTab, previewKind } from "@/lib/preview";
-import { FilePreviewDialog } from "@/ui/filepreview";
-import { findQuoteStart, htmlToText, textToHtml } from "@/lib/text";
+// Loaded when first opened: it is not needed to show mail, and it is not small.
+const FilterFromMessageDialog = lazy(() => import("./FilterFromMessage").then((m) => ({ default: m.FilterFromMessageDialog })));
+// The preview carries a Markdown renderer, which is most of its weight.
+const FilePreviewDialog = lazy(() => import("@/ui/filepreview").then((m) => ({ default: m.FilePreviewDialog })));
+import { findQuoteStart, htmlToText, textToHtml, withoutBidiControls } from "@/lib/text/text";
 import { canShare, canShareFiles, shareFile, shareText } from "@/lib/share";
 import { Avatar } from "@/ui/misc";
 import { MenuItem, MenuSep, Popover, useMenu } from "@/ui/popover";
@@ -60,12 +63,12 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
   /*
    * Following a link out of a message, when the reader has asked to be asked.
    *
-   * The click is cancelled and the navigation re-issued after the answer,
+   * The click is canceled and the navigation re-issued after the answer,
    * because there is no way to hold a real navigation open across a dialog.
    * `window.open` runs in the continuation of the dialog's own click, which is
    * still the user gesture the popup blocker wants to see.
    *
-   * Both message bodies go through here -- the sanitised HTML one and the
+   * Both message bodies go through here -- the sanitized HTML one and the
    * plain-text one -- because a link in a plain-text mail is linkified by us
    * and is exactly as capable of pointing somewhere else as one the sender
    * marked up.
@@ -116,7 +119,12 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
   /* Stable, so the body's click handler keeps its identity between renders.
      Passing an inline arrow here is what made the handler change on every
      render in the first place. */
-  const showImages = useCallback(() => setAllowRemote(true), []);
+  const showImages = useCallback(() => {
+    setAllowRemote(true);
+    // Recorded for the composer: a reply quotes this message and must not
+    // fetch what the reader has not agreed to (#410).
+    useMail.getState().showImages(e.id);
+  }, [e.id]);
   const [filterOpen, setFilterOpen] = useState(false);
   const moreMenu = useMenu();
   const [, navigate] = useLocation();
@@ -126,7 +134,7 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
   const from = e.from?.[0];
   const senderTrusted = settings.trustedImageSenders.includes((from?.email ?? "").toLowerCase());
   const inContacts = useContacts((s) => Boolean(from && s.loaded && s.lookupByEmail(from.email)));
-  const remoteAllowed = allowRemote || settings.imagePolicy === "always" || senderTrusted || (settings.imagePolicy === "contacts" && inContacts);
+  const remoteAllowed = remoteImagesAllowed({ from: from?.email, policy: settings.imagePolicy, trusted: settings.trustedImageSenders, inContacts, shown: allowRemote });
   const imageProxy = useSession((s) => s.session?.ihasmail?.imageProxy ?? true);
   const scheduled = useScheduled((s) => s.pending[e.id]);
   const receipt = useMemo(() => mdnDecision(e), [e]);
@@ -167,7 +175,7 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
    * the reader has asked for the theme over that too.
    *
    * `forced` is the second switch and is narrower than `themed`: it only turns
-   * on for mail that actually declares colours, so plain mail is themed the
+   * on for mail that actually declares colors, so plain mail is themed the
    * gentle way and never pays for the override rules.
    */
   const declaresColors = useMemo(
@@ -411,7 +419,7 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
                 onClick={async () => {
                   try {
                     await cancelScheduled(e.id);
-                    toast.success(translate("Send cancelled — the message is back in Drafts"));
+                    toast.success(translate("Send canceled — the message is back in Drafts"));
                   } catch (err) {
                     toast.error(translate("Could not cancel: {error}", { error: (err as Error).message }));
                   }
@@ -427,7 +435,7 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
             <div className="remote-banner external-banner" style={{ margin: "0 16px 8px" }}>
               <ShieldAlert size={16} />
               <span className="grow">
-                {tNode("This message came from {domain}, which is outside your organisation.", {
+                {tNode("This message came from {domain}, which is outside your organization.", {
                   domain: <strong className="notranslate" translate="no">{domainOf(from?.email ?? "")}</strong>,
                 })}
               </span>
@@ -456,7 +464,7 @@ export const MessageView = memo(function MessageView({ email: e, expanded, wasUn
         </>
       )}
       {addrMenu.node}
-      {filterOpen && <FilterFromMessageDialog email={e} mailboxId={Object.keys(e.mailboxIds)[0] ?? null} onClose={() => setFilterOpen(false)} />}
+      {filterOpen && <Suspense fallback={null}><FilterFromMessageDialog email={e} mailboxId={Object.keys(e.mailboxIds)[0] ?? null} onClose={() => setFilterOpen(false)} /></Suspense>}
       <Dialog open={showSource} onClose={() => setShowSource(false)} title={translate("Original message")} size="xl">
         {source === null ? <div className="center"><span className="spinner" /></div> : <pre className="code notranslate" translate="no" style={{ minHeight: 300, maxHeight: "65vh" }}>{source}</pre>}
       </Dialog>
@@ -531,7 +539,7 @@ function HtmlBody({ html, bodyStyle, themed, forced, onShowImages, onFollowLink 
   const onClick = useCallback(
     (ev: Event) => {
       const t = ev.target as HTMLElement;
-      const a = t.closest("a");
+      const a = t.closest("a, area");
       if (a) {
         const href = a.getAttribute("href") ?? "";
         if (href.startsWith("mailto:")) {
@@ -796,7 +804,13 @@ function TnefContents({ part, accountId }: { part: EmailBodyPart; accountId: Id 
       const blob = await client.fetchBlob(accountId, part.blobId, part.type);
       const found = parseTnef(await blob.arrayBuffer());
       setFiles(found);
-      setUrls(found.map((f) => URL.createObjectURL(new Blob([f.data as unknown as BlobPart], { type: f.type }))));
+      /*
+       * The type inside a winmail.dat is whatever the sender wrote, and never
+       * passed the server's check on what may be shown inline. Opened from its
+       * blob: URL, text/html would render as a page on this origin -- so only
+       * the types the server itself would show are kept.
+       */
+      setUrls(found.map((f) => URL.createObjectURL(new Blob([f.data as unknown as BlobPart], { type: openableInTab(f.type) ? f.type : "application/octet-stream" }))));
       setState("done");
     } catch {
       setState("error");
@@ -859,7 +873,7 @@ function AttachmentList({ attachments, accountId, email }: { attachments: EmailB
    */
   const shareAttachment = async (a: EmailBodyPart) => {
     if (!a.blobId) return;
-    const name = a.name ?? "attachment";
+    const name = withoutBidiControls(a.name ?? "") || "attachment";
     const download = () => {
       const l = document.createElement("a");
       l.href = client.downloadUrl(accountId, a.blobId!, name, a.type);
@@ -885,16 +899,17 @@ function AttachmentList({ attachments, accountId, email }: { attachments: EmailB
       ))}
       <div className="attachments">
         {attachments.map((a, i) => {
-          const url = a.blobId ? client.downloadUrl(accountId, a.blobId, a.name ?? "attachment", a.type) : "#";
-          const inlineUrl = a.blobId ? client.downloadUrl(accountId, a.blobId, a.name ?? "attachment", a.type, true) : "#";
+          const name = a.name ? withoutBidiControls(a.name) : null;
+          const url = a.blobId ? client.downloadUrl(accountId, a.blobId, name ?? "attachment", a.type) : "#";
+          const inlineUrl = a.blobId ? client.downloadUrl(accountId, a.blobId, name ?? "attachment", a.type, true) : "#";
           return (
-            <a key={a.blobId ?? i} className="attachment" href={url} download={a.name ?? undefined} title={`${a.name ?? translate("Attachment")} (${formatSize(a.size)})`} onClick={(ev) => { if (viewable(a)) { ev.preventDefault(); setPreview(a); } }}>
+            <a key={a.blobId ?? i} className="attachment" href={url} download={name ?? undefined} title={`${name ?? translate("Attachment")} (${formatSize(a.size)})`} onClick={(ev) => { if (viewable(a)) { ev.preventDefault(); setPreview(a); } }}>
               <span className="att-icon">{a.type.startsWith("image/") && a.type !== "image/svg+xml" && a.blobId ? <img src={inlineUrl} alt="" loading="lazy" /> : attachmentIcon(a.type, a.name)}</span>
               <span className="att-text">
-                <span className="att-name">{a.name ?? "(unnamed)"}</span>
+                <span className="att-name">{name ?? "(unnamed)"}</span>
                 <span className="att-size">{formatSize(a.size)}</span>
                 <span className="att-actions">
-                  <button className="icon-btn xs" title={translate("Download")} onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); const l = document.createElement("a"); l.href = url; l.download = a.name ?? ""; l.click(); }}><Download size={14} /></button>
+                  <button className="icon-btn xs" title={translate("Download")} onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); const l = document.createElement("a"); l.href = url; l.download = name ?? ""; l.click(); }}><Download size={14} /></button>
                   {canShareFiles() && a.blobId && <button className="icon-btn xs" title={tc("share sheet", "Share")} onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); void shareAttachment(a); }}><Share2 size={14} /></button>}
                   {openableInTab(a.type) && a.blobId && <button className="icon-btn xs" title={translate("Open in new tab")} onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); window.open(inlineUrl, "_blank", "noopener"); }}><ExternalLink size={14} /></button>}
                 </span>
@@ -908,8 +923,10 @@ function AttachmentList({ attachments, accountId, email }: { attachments: EmailB
           </button>
         )}
       </div>
+      {preview && (
+      <Suspense fallback={null}>
       <FilePreviewDialog
-        file={preview && preview.blobId ? {
+        file={preview.blobId ? {
           name: preview.name ?? translate("file"),
           type: preview.type,
           size: preview.size,
@@ -919,6 +936,8 @@ function AttachmentList({ attachments, accountId, email }: { attachments: EmailB
         onClose={() => setPreview(null)}
         caption={<p className="hint" style={{ marginTop: 8 }}>{translate("From: {sender}", { sender: displayName(email.from?.[0]) })}</p>}
       />
+      </Suspense>
+      )}
     </>
   );
 }

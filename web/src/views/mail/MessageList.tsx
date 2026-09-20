@@ -1,27 +1,30 @@
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent, type ReactNode } from "react";
+import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { useShallow } from "zustand/react/shallow";
 import { Archive, ArrowLeft, CalendarDays, CalendarRange, CalendarPlus, CheckSquare, FolderInput, PanelRight, PanelBottom, PanelTop, Filter, Inbox, Mail, MailOpen, MailPlus, MoreVertical, Paperclip, RefreshCw, Reply, Search, Star, Tag, Trash2, AlertOctagon, Forward, Eraser, ShieldCheck, X } from "lucide-react";
 import { useLocation } from "wouter";
 import { useMail, type ListState } from "@/store/mail";
 import { dateTimeKey, useSettings } from "@/store/settings";
 import type { Email, Id } from "@/jmap/types";
 import { formatListDate } from "@/lib/format";
-import { mailboxDisplayName } from "@/lib/mailboxName";
-import { groupByArchivePath, archivePath, type ArchiveGranularity } from "@/lib/archiveDate";
-import { canEmpty, confirmAndEmpty, emptyLabel } from "@/lib/emptyFolder";
+import { mailboxDisplayName } from "@/lib/mailbox/mailboxName";
+import { groupByArchivePath, archivePath, type ArchiveGranularity } from "@/lib/mailbox/archiveDate";
+import { canEmpty, confirmAndEmpty, emptyLabel } from "@/lib/mailbox/emptyFolder";
 import { rowIsOpen } from "@/lib/openMessage";
 import { displayName, shortName } from "@/lib/address";
 import { Avatar, Empty, useIsMobile, useIsTouch } from "@/ui/misc";
-import { rowClick } from "@/lib/listSelection";
+import { rowClick } from "@/lib/input/listSelection";
 import { MenuItem, MenuSep, MenuTitle, Popover, useMenu } from "@/ui/popover";
 import { useCompose } from "@/store/compose";
 import { useCalendar } from "@/store/calendar";
-import { startAppointment } from "@/lib/appointment";
+import { startAppointment } from "@/lib/calendar/appointment";
 import { toast } from "@/ui/toast";
-import { haptic, usePullToRefresh, useTouchRow, PULL_TRIGGER } from "@/lib/touch";
-import { describeSwipe, type SwipeAction, type SwipeDescriptor, type SwipeIcon } from "@/lib/swipe";
-import { FilterFromMessageDialog } from "./FilterFromMessage";
+import { haptic, usePullToRefresh, useTouchRow, PULL_TRIGGER } from "@/lib/input/touch";
+import { describeSwipe, type SwipeAction, type SwipeDescriptor, type SwipeIcon } from "@/lib/input/swipe";
 import { plural, t } from "@/lib/i18n";
+
+// Loaded when first opened: it is not needed to show mail, and it is not small.
+const FilterFromMessageDialog = lazy(() => import("./FilterFromMessage").then((m) => ({ default: m.FilterFromMessageDialog })));
 
 /**
  * The glyph on the strip a swipe reveals. Sized larger than the toolbar's
@@ -38,6 +41,26 @@ const SWIPE_ICON: Record<SwipeIcon, ReactNode> = {
   unstar: <Star size={22} />,
   move: <FolderInput size={22} />,
 };
+
+/**
+ * A callback whose identity never changes but which always runs the latest
+ * version of `fn`.
+ *
+ * The rows are memoized, and every handler they are given has to keep its
+ * identity for that to mean anything. The handlers here read the selection,
+ * the list and the menu, all of which change constantly -- so as ordinary
+ * `useCallback`s they were new on nearly every render, and every visible row
+ * rendered again with them.
+ */
+function useStableCallback<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  const ref = useRef(fn);
+  // Updated after render rather than during it, so a render React throws away
+  // never leaves its version behind. Handlers only run on events, which come later.
+  useLayoutEffect(() => {
+    ref.current = fn;
+  });
+  return useCallback((...args: A) => ref.current(...args), []);
+}
 
 export interface ListActions {
   archive: (rows?: Id[]) => Promise<void>;
@@ -71,7 +94,6 @@ interface Props {
 export function MessageList({ title, list, openThreadId, openMessageId, focusId, setFocusId, onOpen, actions, mailboxId, isSearch }: Props) {
   const [, navigate] = useLocation();
   const emails = useMail((s) => s.emails);
-  const threads = useMail((s) => s.threads);
   const selected = useMail((s) => s.selected);
   const select = useMail((s) => s.select);
   const selectAll = useMail((s) => s.selectAll);
@@ -161,7 +183,7 @@ export function MessageList({ title, list, openThreadId, openMessageId, focusId,
     onPull: useCallback((y: number, armed: boolean, live: boolean) => setPull({ y, armed, live }), []),
   });
 
-  const onRowClick = useCallback(
+  const onRowClick = useStableCallback(
     (e: MouseEvent, rowId: Id) => {
       const action = rowClick({
         rowId, ids, anchor: lastClick.current, selected,
@@ -179,18 +201,14 @@ export function MessageList({ title, list, openThreadId, openMessageId, focusId,
       // leaves the rows looking smeared blue over the selection they meant.
       else window.getSelection()?.removeAllRanges();
     },
-    [ids, select, selected, isMobile, onOpen],
   );
 
-  const onContext = useCallback(
-    (e: MouseEvent, rowId: Id) => {
-      e.preventDefault();
-      setCtxRow(rowId);
-      setFocusId(rowId);
-      ctxMenu.openAt(e.clientX, e.clientY);
-    },
-    [ctxMenu, setFocusId],
-  );
+  const onContext = useStableCallback((e: MouseEvent, rowId: Id) => {
+    e.preventDefault();
+    setCtxRow(rowId);
+    setFocusId(rowId);
+    ctxMenu.openAt(e.clientX, e.clientY);
+  });
 
   /*
    * Hold a row to select it, the way the mail app the phone came with does.
@@ -201,15 +219,12 @@ export function MessageList({ title, list, openThreadId, openMessageId, focusId,
    * row *is* how you select it. Once one row is selected, plain taps toggle
    * the rest (see `onRowClick`), so this only has to open the mode.
    */
-  const onLongPress = useCallback(
-    (rowId: Id) => {
-      haptic(15);
-      setFocusId(rowId);
-      lastClick.current = rowId;
-      select([rowId], !useMail.getState().selected[rowId]);
-    },
-    [select, setFocusId],
-  );
+  const onLongPress = useStableCallback((rowId: Id) => {
+    haptic(15);
+    setFocusId(rowId);
+    lastClick.current = rowId;
+    select([rowId], !useMail.getState().selected[rowId]);
+  });
 
   const onSwipeState = useCallback((rowId: Id, state: { dir: -1 | 1; armed: boolean; desc: SwipeDescriptor } | null) => {
     // A row clearing itself must not clear a gesture that has since moved on
@@ -217,7 +232,7 @@ export function MessageList({ title, list, openThreadId, openMessageId, focusId,
     setSwiping((cur) => (state ? { id: rowId, ...state } : cur?.id === rowId ? null : cur));
   }, []);
 
-  const fireSwipe = useCallback(
+  const fireSwipe = useStableCallback(
     async (rowId: Id, d: SwipeDescriptor) => {
       switch (d.action) {
         case "archive": await actions.archive([rowId]); break;
@@ -229,8 +244,15 @@ export function MessageList({ title, list, openThreadId, openMessageId, focusId,
         case "move": actions.move([rowId]); break;
       }
     },
-    [actions],
   );
+  const onRowSelect = useStableCallback((rowId: Id, on: boolean) => {
+    select([rowId], on);
+    lastClick.current = rowId;
+  });
+  const onRowStar = useStableCallback((rowId: Id, on: boolean) => void actions.star(on, [rowId]));
+  const onRowArchive = useStableCallback((rowId: Id) => void actions.archive([rowId]));
+  const onRowTrash = useStableCallback((rowId: Id) => void actions.trash([rowId]));
+  const onRowRead = useStableCallback((rowId: Id, read: boolean) => void actions.read(read, [rowId]));
 
   const ctxTargets = useMemo(() => (ctxRow ? (selected[ctxRow] ? Object.keys(selected) : [ctxRow]) : []), [ctxRow, selected]);
 
@@ -463,7 +485,6 @@ export function MessageList({ title, list, openThreadId, openMessageId, focusId,
                 }
                 const e = emails[id];
                 if (!e) return <div key={id} style={{ position: "absolute", top: vi.start, height: vi.size }} />;
-                const thread = list?.collapseThreads ? threads[e.threadId] : undefined;
                 const strip = swiping?.id === id ? swiping : null;
                 return (
                   <Fragment key={id}>
@@ -486,8 +507,8 @@ export function MessageList({ title, list, openThreadId, openMessageId, focusId,
                       </div>
                     )}
                     <Row
-                      email={e}
-                      threadEmails={thread ? thread.emailIds.map((x) => emails[x]).filter((x): x is Email => Boolean(x)) : undefined}
+                      id={id}
+                      threadId={list?.collapseThreads ? e.threadId : null}
                       top={vi.start}
                       height={vi.size}
                       selected={Boolean(selected[id])}
@@ -501,12 +522,11 @@ export function MessageList({ title, list, openThreadId, openMessageId, focusId,
                       isSent={mailbox?.role === "sent"}
                       onClick={onRowClick}
                       onContext={onContext}
-                      onSelect={(rowId, on) => { select([rowId], on); lastClick.current = rowId; }}
-                      onStar={(rowId, on) => void actions.star(on, [rowId])}
-                      onArchive={(rowId) => void actions.archive([rowId])}
-                      onTrash={(rowId) => void actions.trash([rowId])}
-                      onRead={(rowId, read) => void actions.read(read, [rowId])}
-                      selectedIds={selected}
+                      onSelect={onRowSelect}
+                      onStar={onRowStar}
+                      onArchive={onRowArchive}
+                      onTrash={onRowTrash}
+                      onRead={onRowRead}
                       touch={isTouch}
                       role={mailbox?.role ?? null}
                       swipeLeft={settings.swipeLeft}
@@ -542,14 +562,15 @@ export function MessageList({ title, list, openThreadId, openMessageId, focusId,
         <MenuItem icon={<Filter size={16} />} label={t("Filter messages like this…")} onClick={() => { const e = ctxRow ? emails[ctxRow] : undefined; if (e) setFilterFrom(e); }} />
         {hasCalendar && <MenuItem icon={<CalendarPlus size={16} />} label={t("Create event…")} onClick={() => { const e = ctxRow ? emails[ctxRow] : undefined; if (e) void startAppointment(e, navigate).catch((err: unknown) => toast.error((err as Error).message)); }} />}
       </Popover>
-      {filterFrom && <FilterFromMessageDialog email={filterFrom} mailboxId={mailboxId} onClose={() => setFilterFrom(null)} />}
+      {filterFrom && <Suspense fallback={null}><FilterFromMessageDialog email={filterFrom} mailboxId={mailboxId} onClose={() => setFilterFrom(null)} /></Suspense>}
     </div>
   );
 }
 
 interface RowProps {
-  email: Email;
-  threadEmails?: Email[];
+  id: Id;
+  /** The conversation to summarize, in conversation view; null for a single message. */
+  threadId: Id | null;
   top: number;
   height: number;
   selected: boolean;
@@ -561,7 +582,6 @@ interface RowProps {
   isDrafts: boolean;
   isSent: boolean;
   mailboxId: Id | null;
-  selectedIds: Record<Id, true>;
   onClick: (e: MouseEvent, id: Id) => void;
   onContext: (e: MouseEvent, id: Id) => void;
   onSelect: (id: Id, on: boolean) => void;
@@ -579,12 +599,40 @@ interface RowProps {
   onSwipeFire: (id: Id, desc: SwipeDescriptor) => Promise<void>;
 }
 
-const Row = memo(function Row({ email: e, threadEmails, top, height, selected, focused, open, twoLine, showAvatar, showPreview, isDrafts, isSent, mailboxId, selectedIds, onClick, onContext, onSelect, onStar, onArchive, onTrash, onRead, touch, role, swipeLeft, swipeRight, onLongPress, onSwipeState, onSwipeFire }: RowProps) {
+const NO_EMAILS: Email[] = [];
+
+/*
+ * A row reads its own message and conversation from the store, rather than
+ * being handed them. The list re-renders on every store write -- each star,
+ * each push, each thread loaded -- and objects built for a row in that render
+ * were new every time, so no row was ever skipped. Selected this way, a row
+ * renders when something it shows has changed, and not otherwise.
+ */
+const Row = memo(function Row(props: RowProps) {
+  const email = useMail((s) => s.emails[props.id]);
+  const threadEmails = useMail(
+    useShallow((s) => {
+      if (!props.threadId) return NO_EMAILS;
+      const ids = s.threads[props.threadId]?.emailIds;
+      if (!ids) return NO_EMAILS;
+      return ids.map((x) => s.emails[x]).filter((x): x is Email => Boolean(x));
+    }),
+  );
+  if (!email) return null;
+  const { id: _id, threadId, ...rest } = props;
+  return <RowView {...rest} email={email} threadEmails={threadId ? threadEmails : undefined} />;
+});
+
+type RowViewProps = Omit<RowProps, "id" | "threadId"> & { email: Email; threadEmails?: Email[] };
+
+function RowView({ email: e, threadEmails, top, height, selected, focused, open, twoLine, showAvatar, showPreview, isDrafts, isSent, mailboxId, onClick, onContext, onSelect, onStar, onArchive, onTrash, onRead, touch, role, swipeLeft, swipeRight, onLongPress, onSwipeState, onSwipeFire }: RowViewProps) {
   const labels = useSettings((s) => s.settings.labels);
   // Subscribed purely so the row re-renders when the date format changes.
   useSettings((s) => dateTimeKey(s.settings));
-  const inScope = threadEmails ? threadEmails.filter((x) => (mailboxId ? x.mailboxIds[mailboxId] : true)) : [e];
-  const scope = inScope.length ? inScope : [e];
+  const scope = useMemo(() => {
+    const inScope = threadEmails ? threadEmails.filter((x) => (mailboxId ? x.mailboxIds[mailboxId] : true)) : [e];
+    return inScope.length ? inScope : [e];
+  }, [threadEmails, mailboxId, e]);
   const unread = scope.some((x) => !x.keywords.$seen);
   const starred = scope.some((x) => x.keywords.$flagged);
   const hasAtt = scope.some((x) => x.hasAttachment);
@@ -612,7 +660,7 @@ const Row = memo(function Row({ email: e, threadEmails, top, height, selected, f
   /*
    * How far this row has been dragged from home, and whether it is currently
    * animating back. Kept here rather than in the list so that a moving finger
-   * re-renders one row instead of the whole virtualised list; the list is told
+   * re-renders one row instead of the whole virtualized list; the list is told
    * only the three things the strip behind the row needs -- which row, which
    * way, and whether letting go now would fire.
    */
@@ -670,7 +718,30 @@ const Row = memo(function Row({ email: e, threadEmails, top, height, selected, f
     },
   });
 
+  /*
+   * A conversation starts loading when the pointer settles on its row, or the
+   * moment a finger or button goes down, so that on a slow link the click
+   * finds it on its way. Drafts open in the composer instead.
+   */
+  const hover = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(hover.current), []);
+  const prefetch = () => {
+    if (!isDrafts) useMail.getState().prefetchThread(e.threadId);
+  };
+  const onPointerEnter = (ev: PointerEvent) => {
+    if (ev.pointerType !== "mouse") return;
+    window.clearTimeout(hover.current);
+    hover.current = window.setTimeout(prefetch, 80);
+  };
+  const onPointerLeave = () => window.clearTimeout(hover.current);
+  const onPointerDown = (ev: PointerEvent<HTMLDivElement>) => {
+    prefetch();
+    gesture.onPointerDown?.(ev);
+  };
+
   const onDragStart = (ev: DragEvent) => {
+    // Read when the drag starts, so the row need not re-render on every change of selection.
+    const selectedIds = useMail.getState().selected;
     const ids = selectedIds[e.id] ? Object.keys(selectedIds) : [e.id];
     // include thread emails in scope
     const all = new Set<Id>();
@@ -704,6 +775,9 @@ const Row = memo(function Row({ email: e, threadEmails, top, height, selected, f
       draggable={!touch}
       onDragStart={onDragStart}
       {...gesture}
+      onPointerDown={onPointerDown}
+      onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
       role="row"
       aria-selected={selected}
     >
@@ -762,4 +836,4 @@ const Row = memo(function Row({ email: e, threadEmails, top, height, selected, f
       )}
     </div>
   );
-});
+}

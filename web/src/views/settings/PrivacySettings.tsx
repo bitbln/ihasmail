@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAppName } from "@/lib/brand";
 import { useSettings, type ReadReceiptPolicy } from "@/store/settings";
 import { useMail } from "@/store/mail";
 import { domainOf } from "@/lib/address";
@@ -20,9 +21,10 @@ import { isEnforced } from "@/lib/settingsPolicy";
  * two similar words next to each other in a nav is how a menu becomes
  * something people hunt through: that section is credentials and access --
  * password, two-factor, app passwords, live sessions. This one is how the app
- * behaves towards the reader and towards senders.
+ * behaves toward the reader and toward senders.
  */
 export function PrivacySettings() {
+  const appName = useAppName();
   const s = useSettings((st) => st.settings);
   const update = useSettings((st) => st.update);
   const trusted = s.trustedImageSenders;
@@ -43,7 +45,7 @@ export function PrivacySettings() {
           <option value="always">{t("Always show")}</option>
         </select>
         <p className="hint">
-          {t("An image loaded from a sender's server tells them the message was opened, when, and from roughly where. Approved images are fetched by ihasmail's own server rather than the browser, so the sender learns none of those.")}
+          {t("An image loaded from a sender's server tells them the message was opened, when, and from roughly where. Approved images are fetched by {app}'s own server rather than the browser, so the sender learns none of those.", { app: appName })}
         </p>
       </div>
       {trusted.length > 0 && (
@@ -155,7 +157,7 @@ export function PrivacySettings() {
 /**
  * A list of domains, added one at a time and removed by their chip.
  *
- * Typed entries are normalised on the way in -- a leading `@`, stray case, a
+ * Typed entries are normalized on the way in -- a leading `@`, stray case, a
  * whole address pasted instead of a domain -- because the thing being compared
  * against is a hostname, and a list holding "@Example.com " silently matches
  * nothing at all.

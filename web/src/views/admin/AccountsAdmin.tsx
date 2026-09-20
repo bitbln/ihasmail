@@ -3,7 +3,7 @@ import { useLocation } from "wouter";
 import { ChevronLeft, ChevronRight, Search, UserPlus, Users } from "lucide-react";
 import { useSession } from "@/store/session";
 import { STALWART_CAP } from "@/jmap/client";
-import { can, type RoleDef } from "@/lib/adminAccess";
+import { can, type RoleDef } from "@/lib/admin/adminAccess";
 import {
   describeDirectoryError,
   getAccounts,
@@ -14,13 +14,14 @@ import {
   DISK_QUOTA,
   type DirectoryAccount,
   type DirectoryDomain,
-} from "@/lib/adminDirectory";
+} from "@/lib/admin/adminDirectory";
 import { formatSize } from "@/lib/format";
 import { plural, t } from "@/lib/i18n";
 import { Avatar, Empty, Spinner } from "@/ui/misc";
 import { usePermissions } from "./usePermissions";
 import { isSelf, roleName, type DirectoryContext } from "./directoryContext";
 import { AccountSheet } from "./AccountSheet";
+import { listTenantNames } from "@/lib/admin/adminTenants";
 
 const PAGE_SIZE = 50;
 
@@ -38,6 +39,7 @@ export function AccountsAdmin({ selectedId }: { selectedId?: string }) {
   const [roles, setRoles] = useState<Map<string, RoleDef> | null>(null);
   const [groups, setGroups] = useState<Map<string, DirectoryAccount>>(new Map());
   const [loose, setLoose] = useState<DirectoryAccount | null>(null);
+  const [tenants, setTenants] = useState<Array<{ id: string; name: string }> | null>(null);
 
   // Typing is not a query per keystroke.
   useEffect(() => {
@@ -49,22 +51,22 @@ export function AccountsAdmin({ selectedId }: { selectedId?: string }) {
   }, [text]);
 
   useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     setError(null);
     void (async () => {
       try {
         const q = await queryAccounts({ type: "User", text: query, position, limit: PAGE_SIZE });
         const accounts = await getAccounts(q.ids);
-        if (!cancelled) setPage({ accounts, total: q.total });
+        if (!canceled) setPage({ accounts, total: q.total });
       } catch (err) {
-        if (!cancelled) {
+        if (!canceled) {
           setPage({ accounts: [], total: 0 });
           setError(describeDirectoryError(err));
         }
       }
     })();
     return () => {
-      cancelled = true;
+      canceled = true;
     };
   }, [query, position, reload]);
 
@@ -74,6 +76,7 @@ export function AccountsAdmin({ selectedId }: { selectedId?: string }) {
     if (can(perms, "Domain", "Query") && can(perms, "Domain", "Get")) void listDomains().then(setServerDomains, () => setServerDomains(null));
     if (can(perms, "Role", "Query") && can(perms, "Role", "Get")) void listRoles().then((list) => setRoles(new Map(list.map((r) => [r.id, r]))), () => setRoles(null));
     void listGroups().then((list) => setGroups(new Map(list.map((g) => [g.id, g]))), () => setGroups(new Map()));
+    if (can(perms, "Tenant", "Query") && can(perms, "Tenant", "Get")) void listTenantNames().then(setTenants, () => setTenants(null));
   }, [perms, reload]);
 
   // An account opened by address that is not on the page being shown.
@@ -82,13 +85,13 @@ export function AccountsAdmin({ selectedId }: { selectedId?: string }) {
       setLoose(null);
       return;
     }
-    let cancelled = false;
+    let canceled = false;
     void getAccounts([selectedId]).then(
-      ([a]) => { if (!cancelled) setLoose(a ?? null); },
-      () => { if (!cancelled) setLoose(null); },
+      ([a]) => { if (!canceled) setLoose(a ?? null); },
+      () => { if (!canceled) setLoose(null); },
     );
     return () => {
-      cancelled = true;
+      canceled = true;
     };
   }, [selectedId, page]);
 
@@ -103,9 +106,10 @@ export function AccountsAdmin({ selectedId }: { selectedId?: string }) {
       domains: (serverDomains ?? [...seen.values()]).slice().sort((x, y) => x.name.localeCompare(y.name)),
       roles,
       groups,
+      tenants,
       self: { ids: new Set(ownId ? [ownId] : []), address: (session?.username ?? "").toLowerCase() },
     };
-  }, [page, serverDomains, roles, groups, session]);
+  }, [page, serverDomains, roles, groups, tenants, session]);
 
   const selected = selectedId && selectedId !== "new" ? (page?.accounts.find((a) => a.id === selectedId) ?? loose) : null;
   const close = () => navigate("/admin/accounts");

@@ -7,7 +7,7 @@ import { settingsAlreadyLoadedFor, stopSettingsSync } from "../settingsSync";
  * Settings used to live only in localStorage, so nothing followed the user
  * between devices — issue #54, whose sharpest case is the default identity:
  * with none set, the address that sorts first wins, so mail goes out from an
- * address the recipient may not recognise.
+ * address the recipient may not recognize.
  *
  * The split is written as a list of exceptions, which means the interesting
  * test is not "does this key sync" but "does a key added later sync without
@@ -25,7 +25,7 @@ describe("which settings follow the account", () => {
     const synced = syncedPart(DEFAULT_SETTINGS);
     // A pane width picked on a monitor is wrong on a laptop, and the
     // notification toggles track a per-browser permission grant.
-    for (const key of ["listPaneWidth", "listPaneHeight", "sidebarWidth", "density", "fontSize", "sidebarCollapsed", "desktopNotifications", "notificationSound"]) {
+    for (const key of ["listPaneWidth", "listPaneHeight", "contactsListWidth", "sidebarWidth", "density", "fontSize", "sidebarCollapsed", "desktopNotifications", "notificationSound"]) {
       expect(synced, key).not.toHaveProperty(key);
     }
   });

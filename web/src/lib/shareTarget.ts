@@ -12,7 +12,7 @@
  * has to find the payload lying somewhere.
  */
 import { withBase } from "./basePath";
-import { SW_CACHE_NAME } from "./swCache";
+import { SW_CACHE_NAME } from "./sw/swCache";
 
 export interface SharedContent {
   title: string;
@@ -74,7 +74,7 @@ export async function collectShare(): Promise<SharedContent | null> {
        * The bytes, rather than the Blob holding them.
        *
        * `new File([blob], …)` is correct and works in a browser, but a Blob
-       * only counts as a part where the File constructor recognises it as one
+       * only counts as a part where the File constructor recognizes it as one
        * -- and where it does not, it is stringified instead, producing a file
        * containing the thirteen characters "[object Blob]" and no error
        * anywhere. That is exactly what CI caught on Node 22 while it passed
@@ -116,4 +116,18 @@ export function shareBody(share: Pick<SharedContent, "text" | "url">): string {
   const url = share.url.trim();
   if (!url || text.includes(url)) return text;
   return text ? `${text}\n\n${url}` : url;
+}
+
+/**
+ * What a share holds, in the few words the confirmation shows.
+ *
+ * Only what the reader needs to recognize it as theirs: the title, the start
+ * of the text or link, and the names of the files. It is shown before any of
+ * it goes near a message, because the page cannot tell a share the reader
+ * made from one a website posted at the same address.
+ */
+export function shareSummary(share: SharedContent): { title: string; preview: string; files: string[] } {
+  const body = [share.text, share.url].map((s) => s.trim()).filter(Boolean).join(" ");
+  const preview = body.length > 160 ? `${body.slice(0, 157).trimEnd()}…` : body;
+  return { title: share.title.trim(), preview, files: share.files.map((f) => f.name) };
 }

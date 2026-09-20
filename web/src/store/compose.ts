@@ -3,16 +3,19 @@ import { client, setErrorMessage } from "@/jmap/client";
 import type { Email, EmailAddress, EmailBodyPart, Id, Identity, SetResponse } from "@/jmap/types";
 import { formatFullDate, uid } from "@/lib/format";
 import { formatAddress, parseMailto, sameAddress, uniqueAddresses } from "@/lib/address";
-import { escapeHtml, htmlToText, quoteText, replySubject, textToHtml } from "@/lib/text";
-import { sanitizeEmailHtml, sanitizeEditorHtml } from "@/lib/html";
+import { escapeHtml, htmlToText, quoteText, replySubject, textToHtml } from "@/lib/text/text";
+import { hasHtmlAlternative, sanitizeEmailHtml, sanitizeEditorHtml } from "@/lib/text/html";
+import { remoteImagesAllowed, restoreBlockedImages, unproxyImages } from "@/lib/mail/remoteImages";
 import { toast } from "@/ui/toast";
 import { useMail, FULL_PROPS, BODY_PROPS } from "./mail";
+import { useSession } from "./session";
 import { ensureScheduledMailbox, useScheduled } from "./scheduled";
 import { formatScheduleTime, holdUntil } from "@/lib/schedule";
 import { t as translate } from "@/lib/i18n";
 import { BASE_PATH } from "@/lib/basePath";
 import { settings } from "./settings";
-import { emlFilename } from "@/lib/emlName";
+import { useContacts } from "./contacts";
+import { emlFilename } from "@/lib/text/emlName";
 import { fillPlaceholders, type PlaceholderContext } from "@/lib/templatePlaceholders";
 import { shareBody, type SharedContent } from "@/lib/shareTarget";
 
@@ -74,6 +77,20 @@ export interface Draft {
   /** Original identity signature HTML currently embedded, to replace on identity switch. */
   signatureHtml: string;
   replyMode: "reply" | "replyAll" | "forward" | null;
+  /**
+   * The quoted message as it was prepared in each format, kept so that
+   * switching format re-attaches the original rather than a conversion of
+   * whatever the other format flattened it into. Empty on a draft that quotes
+   * nothing.
+   */
+  quoteHtml: string;
+  quoteText: string;
+  /**
+   * The format the message being answered was written in, when it is not the
+   * one this draft opened in (#407). The composer offers the switch; answering
+   * it either way, or dismissing it, clears this.
+   */
+  formatOffer: "html" | "text" | null;
   mailboxIdOnSend?: Id | null;
   /** When set, hand the message to the server held until this instant. */
   sendAt: number | null;
@@ -82,7 +99,9 @@ export interface Draft {
 interface ComposeState {
   drafts: Draft[];
   activeKey: string | null;
-  pendingSends: Record<string, { timer: number; toastId: number; draft: Draft }>;
+  pendingSends: Record<string, { timer: number; toastId: number; draft: Draft; run: () => Promise<void> }>;
+  /** Send everything still inside its undo window now. For signing out, while the session can still send. */
+  flushPendingSends(): Promise<void>;
   open(init?: Partial<Draft>): string;
   /** Open a draft holding what the operating system's share sheet sent us. */
   openFromShare(share: SharedContent): string;
@@ -134,7 +153,7 @@ function blankDraft(init: Partial<Draft> = {}): Draft {
     showBcc: false,
     showReplyTo: false,
     minimized: false,
-    maximized: false,
+    maximized: s.composeMaximized,
     dirty: false,
     savedAt: null,
     saving: false,
@@ -142,9 +161,37 @@ function blankDraft(init: Partial<Draft> = {}): Draft {
     error: null,
     signatureHtml: "",
     replyMode: null,
+    quoteHtml: "",
+    quoteText: "",
+    formatOffer: null,
     sendAt: null,
     ...init,
   };
+}
+
+/**
+ * Whether this message's remote images may be fetched into a composer.
+ *
+ * The same question the reader answered, asked with the same inputs: the
+ * policy, the trusted senders, whether the sender is a contact, and whether
+ * the reader pressed "Show images" on this message.
+ */
+/** Whether this deployment fetches remote images through its own server. */
+function imageProxyOn(): boolean {
+  return useSession.getState().session?.ihasmail?.imageProxy ?? true;
+}
+
+function remoteImagesForMessage(email: Email): boolean {
+  const s = settings();
+  const from = email.from?.[0]?.email;
+  const contacts = useContacts.getState();
+  return remoteImagesAllowed({
+    from,
+    policy: s.imagePolicy,
+    trusted: s.trustedImageSenders,
+    inContacts: Boolean(from && contacts.loaded && contacts.lookupByEmail(from)),
+    shown: Boolean(useMail.getState().imagesShown[email.id]),
+  });
 }
 
 export function signatureBlock(identity: Identity | undefined, format: "html" | "text"): string {
@@ -240,7 +287,7 @@ export const useCompose = create<ComposeState>((set, get) => ({
       showCc: Boolean(full.cc?.length),
       showBcc: Boolean(full.bcc?.length),
       subject: full.subject ?? "",
-      html: html ? sanitizeEmailHtml(html, { cidMap, allowRemote: true }).html : textToHtml(text).replace(/\n/g, "<br>"),
+      html: html ? sanitizeEmailHtml(html, { cidMap, allowRemote: remoteImagesForMessage(full), proxyRemote: imageProxyOn(), dropStyleBlocks: true }).html : textToHtml(text).replace(/\n/g, "<br>"),
       text: text || (html ? htmlToText(html) : ""),
       format: html ? "html" : settings().composeFormat,
       attachments,
@@ -306,7 +353,7 @@ export const useCompose = create<ComposeState>((set, get) => ({
       showCc: Boolean(full.cc?.length),
       showBcc: Boolean(full.bcc?.length),
       subject: full.subject ?? "",
-      html: html ? sanitizeEmailHtml(html, { cidMap, allowRemote: true }).html : textToHtml(text).replace(/\n/g, "<br>"),
+      html: html ? sanitizeEmailHtml(html, { cidMap, allowRemote: remoteImagesForMessage(full), proxyRemote: imageProxyOn(), dropStyleBlocks: true }).html : textToHtml(text).replace(/\n/g, "<br>"),
       text: text || (html ? htmlToText(html) : ""),
       format: html ? "html" : settings().composeFormat,
       attachments,
@@ -376,6 +423,13 @@ export const useCompose = create<ComposeState>((set, get) => ({
     const textPart = full.textBody?.[0];
     const origHtml = htmlPart?.partId ? (full.bodyValues?.[htmlPart.partId]?.value ?? "") : "";
     const origText = textPart?.partId ? (full.bodyValues?.[textPart.partId]?.value ?? "") : "";
+    /*
+     * What the message being answered was really written in. `htmlBody` is
+     * derived, so its presence proves nothing -- hasHtmlAlternative() reads the
+     * part's own type. Getting this wrong would offer every plain-text message
+     * a switch to rich text it does not need.
+     */
+    const origFormat = hasHtmlAlternative(htmlPart, origHtml) ? "html" : "text";
     const accountId = mail.accountId!;
     const attachments: ComposeAttachment[] = [];
     const cidMap: Record<string, string> = {};
@@ -386,9 +440,21 @@ export const useCompose = create<ComposeState>((set, get) => ({
         attachments.push({ id: uid("a"), name: a.name ?? "attachment", type: a.type, size: a.size, blobId: a.blobId, progress: 100, error: null, cid: a.cid ?? undefined, inline });
       }
     }
+    /*
+     * Quoting renders the message a second time, so the reader's decision
+     * about its remote images applies here too: a quote that fetched what
+     * they declined would report the message read to whoever was counting
+     * (#410). Blocked images keep their address and get it back on the way
+     * out, so the recipient's copy is the quote as its sender wrote it.
+     */
+    const allowRemote = remoteImagesForMessage(full);
+    // Fetched through this server while the reply is written, as reading the
+    // message does, and pointed back at their own addresses on the way out
+    // (#412).
+    const proxyRemote = imageProxyOn();
     // Inline images are shown via their blob URLs in the editor and converted back to cid: at send time.
     const quotedHtmlBody = origHtml
-      ? sanitizeEmailHtml(origHtml, { cidMap, allowRemote: true, proxyRemote: false }).html
+      ? sanitizeEmailHtml(origHtml, { cidMap, allowRemote, proxyRemote, dropStyleBlocks: true }).html
       : textToHtml(origText).replace(/\n/g, "<br>");
     const fromStr = escapeHtml((full.from ?? []).map(formatAddress).join(", "));
     const date = formatFullDate(full.receivedAt);
@@ -431,6 +497,9 @@ export const useCompose = create<ComposeState>((set, get) => ({
       relatedKeyword: mode === "forward" ? "$forwarded" : "$answered",
       signatureHtml: sigHtml,
       replyMode: mode,
+      quoteHtml,
+      quoteText: quoteTxt,
+      formatOffer: origFormat === s.composeFormat ? null : origFormat,
     });
     set((st) => ({ drafts: [...st.drafts, d], activeKey: d.key }));
     return d.key;
@@ -623,7 +692,7 @@ export const useCompose = create<ComposeState>((set, get) => ({
         });
       }
     };
-    // A scheduled send is already delayed, and cancelling it is a server-side
+    // A scheduled send is already delayed, and canceling it is a server-side
     // operation from the Scheduled folder -- holding it locally first would
     // only add a second, different kind of undo.
     if (delay <= 0 || scheduling) {
@@ -632,7 +701,16 @@ export const useCompose = create<ComposeState>((set, get) => ({
     }
     const toastId = toast.show(translate("Sending…"), { duration: delay * 1000, progress: true, action: { label: translate("Undo"), onClick: () => get().undoSend(key) } });
     const timer = window.setTimeout(() => void doSend(), delay * 1000);
-    set((s) => ({ pendingSends: { ...s.pendingSends, [key]: { timer, toastId, draft: d } } }));
+    set((s) => ({ pendingSends: { ...s.pendingSends, [key]: { timer, toastId, draft: d, run: doSend } } }));
+  },
+
+  async flushPendingSends() {
+    const pending = Object.values(get().pendingSends);
+    for (const p of pending) {
+      window.clearTimeout(p.timer);
+      toast.dismiss(p.toastId);
+    }
+    await Promise.all(pending.map((p) => p.run()));
   },
 
   undoSend(key) {
@@ -742,7 +820,9 @@ export async function buildEmailObject(d: Draft, opts: { forSend: boolean; mailb
   if (!ident) throw new Error(translate("No sending identity available"));
   const from: EmailAddress = { name: ident.name || null, email: ident.email };
 
-  let html = d.format === "html" ? d.html : "";
+  // Images blocked when the message was quoted keep their address; the copy
+  // that leaves carries it, and the recipient's client decides for itself.
+  let html = d.format === "html" ? unproxyImages(restoreBlockedImages(d.html)) : "";
   const text = d.format === "html" ? htmlToText(d.html) : d.text;
 
   // Inline attachments shown via blob URLs in the editor → back to cid: references.
@@ -999,3 +1079,28 @@ export function draftFromMailto(url: string): Partial<Draft> {
     ...(body ? { html: body, text: m.body } : {}),
   };
 }
+
+/*
+ * Nothing written in one session is left for the next.
+ *
+ * The other stores let go of their data when the session ends; this one used
+ * to keep its open composers, so on a shared machine the next person to sign
+ * in -- without a reload, after an idle sign-out, say -- found the last one's
+ * draft open and could send it. A draft that was saved is still in Drafts on
+ * the server. A send still in its undo window was sent on the way out if the
+ * sign-out was a deliberate one (see `logout`); if the session had already
+ * ended there is nothing left to send it with, so its timer is stopped rather
+ * than let it fire under whoever signs in next.
+ */
+useSession.subscribe((s) => {
+  if (s.status !== "anonymous") return;
+  const { drafts, pendingSends } = useCompose.getState();
+  if (!drafts.length && !Object.keys(pendingSends).length) return;
+  for (const t of autosaveTimers.values()) window.clearTimeout(t);
+  autosaveTimers.clear();
+  for (const p of Object.values(pendingSends)) {
+    window.clearTimeout(p.timer);
+    toast.dismiss(p.toastId);
+  }
+  useCompose.setState({ drafts: [], activeKey: null, pendingSends: {} });
+});

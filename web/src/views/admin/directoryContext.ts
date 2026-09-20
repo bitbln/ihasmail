@@ -1,5 +1,5 @@
-import type { RoleDef } from "@/lib/adminAccess";
-import type { DirectoryAccount, DirectoryDomain } from "@/lib/adminDirectory";
+import type { RoleDef } from "@/lib/admin/adminAccess";
+import type { DirectoryAccount, DirectoryDomain } from "@/lib/admin/adminDirectory";
 import { t } from "@/lib/i18n";
 
 export interface DirectoryContext {
@@ -8,6 +8,8 @@ export interface DirectoryContext {
   /** Null when the viewer cannot read roles, which `outranks` treats as unknown. */
   roles: Map<string, RoleDef> | null;
   groups: Map<string, DirectoryAccount>;
+  /** Tenants an account can be put in; absent when the viewer cannot read them, which hides the choice. */
+  tenants?: Array<{ id: string; name: string }> | null;
   /** Registry ids and addresses that are the signed-in account itself. */
   self: { ids: Set<string>; address: string };
 }

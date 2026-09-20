@@ -5,8 +5,8 @@ import { push, type PushState } from "@/jmap/push";
 import { accountForCapability, ownAccountForCapability } from "@/lib/accountRouting";
 import { setServerLocale } from "@/lib/datetime";
 import { flushSettingsPush, stopSettingsSync } from "@/lib/settingsSync";
-import { reloadIfServerRebuilt } from "@/lib/staleBuild";
-import { unsubscribeThisDevice } from "@/lib/webpush";
+import { reloadIfServerRebuilt } from "@/lib/sw/staleBuild";
+import { unsubscribeThisDevice } from "@/lib/notify/webpush";
 import { clearAllData, clearSignedInData, setDeviceTrusted } from "@/lib/storage";
 import { startIdleLogout, stopIdleLogout } from "@/lib/idleLogout";
 
@@ -26,11 +26,13 @@ interface SessionState {
   logout(): Promise<void>;
   refresh(): Promise<void>;
   setAccount(id: Id): void;
-  /** The account to read and write for a capability, honouring the account switcher. */
+  /** The account to read and write for a capability, honoring the account switcher. */
   accountFor(cap: string): Id | null;
   /** The user's own account for a capability, whatever they are looking at. */
   ownAccountFor(cap: string): Id | null;
 }
+
+let refreshing: Promise<void> | null = null;
 
 export const useSession = create<SessionState>((set, get) => ({
   status: "loading",
@@ -78,6 +80,14 @@ export const useSession = create<SessionState>((set, get) => ({
       /* never block signing out over this */
     }
     stopSettingsSync();
+    // A message still inside its undo window goes now, while there is a
+    // session to send it with; signing out is not an undo.
+    try {
+      const { useCompose } = await import("./compose");
+      await useCompose.getState().flushPendingSends();
+    } catch {
+      /* never block signing out over this */
+    }
     try {
       await apiFetch("/api/auth/logout", { method: "POST" });
     } catch {
@@ -92,15 +102,21 @@ export const useSession = create<SessionState>((set, get) => ({
     set({ status: "anonymous", session: null, accountId: null });
   },
 
-  async refresh() {
-    try {
-      const s = await apiFetch<JmapSession>("/api/auth/session?refresh=1");
-      client.session = s;
-      setServerLocale(s.ihasmail?.userLocale);
-      set({ session: s });
-    } catch {
-      /* ignore */
-    }
+  refresh() {
+    // Callers arriving while a refresh is on its way share it.
+    refreshing ??= (async () => {
+      try {
+        const s = await apiFetch<JmapSession>("/api/auth/session?refresh=1");
+        client.session = s;
+        setServerLocale(s.ihasmail?.userLocale);
+        set({ session: s });
+      } catch {
+        /* ignore */
+      } finally {
+        refreshing = null;
+      }
+    })();
+    return refreshing;
   },
 
   setAccount(id) {
