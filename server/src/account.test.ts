@@ -69,7 +69,7 @@ test("the registry reports an account with nothing set up yet", async () => {
 });
 
 test("app passwords are created, listed once with their secret, and revoked", async () => {
-  const created = await post("/api/account/app-passwords", { description: "Thunderbird" });
+  const created = await post("/api/account/app-passwords", { description: "Thunderbird", current: "demo-password" });
   assert.equal(created.status, 200);
   assert.match(created.body.secret, /^\$app\$/, "the server's generated secret is returned");
   assert.ok(created.body.id);
@@ -84,8 +84,86 @@ test("app passwords are created, listed once with their secret, and revoked", as
   assert.deepEqual((await call("/api/account/security")).body.appPasswords, []);
 });
 
+test("an app password needs the account password", async () => {
+  const missing = await post("/api/account/app-passwords", { description: "Stolen" });
+  assert.equal(missing.status, 400);
+  assert.equal(missing.body.error, "missing_fields");
+  const wrong = await post("/api/account/app-passwords", { description: "Stolen", current: "not-my-password" });
+  assert.equal(wrong.status, 403);
+  assert.equal(wrong.body.error, "invalid_credentials");
+  assert.deepEqual((await call("/api/account/security")).body.appPasswords, [], "nothing was created");
+});
+
+test("a checked session cannot mint one through the JMAP proxy instead", async () => {
+  // Signed in without "my own device", so the proxy reads every request.
+  const res = await call("/api/jmap", {
+    method: "POST",
+    body: JSON.stringify({ using: ["urn:ietf:params:jmap:core"], methodCalls: [["x:AppPassword/set", { create: { n: { description: "Stolen" } } }, "0"]] }),
+  });
+  assert.equal(res.status, 403);
+  assert.deepEqual((await call("/api/account/security")).body.appPasswords, []);
+});
+
+test("attachments are kept out of the disk cache of a device that is not the person's own", async () => {
+  const up = await app.request("/api/upload/a1", { method: "POST", headers: { "x-requested-with": "ihasmail", "content-type": "text/plain", cookie }, body: "hello" });
+  assert.equal(up.status, 200);
+  const { blobId } = (await up.json()) as { blobId: string };
+  const name = encodeURIComponent("Invoice_\u202Efdp.exe");
+  const res = await app.request(`/api/blob/a1/${blobId}/${name}?accept=text/plain`, { headers: { cookie } });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("cache-control"), "no-store");
+  assert.equal(res.headers.get("content-disposition"), "attachment; filename*=UTF-8''Invoice_fdp.exe", "no direction override in the saved name");
+  await res.arrayBuffer();
+});
+
+test("a download passes a byte range through, for viewers that read in pieces", async () => {
+  const up = await app.request("/api/upload/a1", { method: "POST", headers: { "x-requested-with": "ihasmail", "content-type": "text/plain", cookie }, body: "hello world" });
+  const { blobId } = (await up.json()) as { blobId: string };
+  const url = `/api/blob/a1/${blobId}/greeting.txt?accept=text/plain`;
+  const part = await app.request(url, { headers: { cookie, range: "bytes=0-4" } });
+  assert.equal(part.status, 206);
+  assert.equal(part.headers.get("content-range"), "bytes 0-4/11");
+  assert.equal(part.headers.get("accept-ranges"), "bytes");
+  assert.equal(await part.text(), "hello");
+  const whole = await app.request(url, { headers: { cookie } });
+  assert.equal(whole.status, 200);
+  assert.equal(whole.headers.get("accept-ranges"), "bytes", "advertised even though Stalwart does not, so a PDF viewer asks");
+  assert.equal(await whole.text(), "hello world");
+  // Past the end, Stalwart sends the whole file rather than a 416.
+  const beyond = await app.request(url, { headers: { cookie, range: "bytes=50-60" } });
+  assert.equal(beyond.status, 200);
+  assert.equal(await beyond.text(), "hello world");
+  // Anything that is not a plain byte range is not passed on.
+  const odd = await app.request(url, { headers: { cookie, range: "items=0-4" } });
+  assert.equal(odd.status, 200);
+  await odd.arrayBuffer();
+});
+
+test("upstream caches let go of sessions that have aged out", async () => {
+  const { sweepUpstreamCaches, upstreamCacheSizes } = await import("./upstream.js");
+  // Signed in above, so this session has an entry.
+  assert.ok(upstreamCacheSizes().sessions >= 1);
+  sweepUpstreamCaches(Date.now() + 60 * 60_000);
+  assert.deepEqual(upstreamCacheSizes(), { sessions: 0, info: 0 });
+});
+
+test("the mock refuses a contact photo given as a blob id, as Stalwart does", async () => {
+  const jmap = (methodCalls: unknown[]) => call("/api/jmap", { method: "POST", body: JSON.stringify({ using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:contacts"], methodCalls }) });
+  const card = (media: unknown) => ({ "@type": "Card", version: "1.0", kind: "individual", name: { full: "Probe" }, addressBookIds: { ab1: true }, media });
+  const res = await jmap([["ContactCard/set", { accountId: "a1", create: {
+    blob: card({ p: { "@type": "Media", kind: "photo", blobId: "b1", mediaType: "image/jpeg" } }),
+    inline: card({ p: { "@type": "Media", kind: "photo", uri: "data:image/jpeg;base64,AA", mediaType: "image/jpeg" } }),
+  } }, "s"]]);
+  assert.equal(res.status, 200);
+  const set = res.body.methodResponses[0][1];
+  assert.equal(set.notCreated.blob.description, "blobIds in media is not supported.");
+  assert.deepEqual(set.notCreated.blob.properties, ["media"]);
+  assert.ok(set.created.inline.id, "a data URI is accepted");
+  await jmap([["ContactCard/set", { accountId: "a1", destroy: [set.created.inline.id] }, "d"]]);
+});
+
 test("an app password needs a name", async () => {
-  const res = await post("/api/account/app-passwords", { description: "   " });
+  const res = await post("/api/account/app-passwords", { description: "   ", current: "demo-password" });
   assert.equal(res.status, 400);
   assert.equal(res.body.error, "missing_fields");
 });
@@ -156,7 +234,7 @@ test("with 2FA on, a password change needs the current code too", async () => {
 test("2FA is switched off with the password and a current code", async () => {
   const state = await call("/api/account/security");
   assert.equal(state.body.otpEnabled, true);
-  // The enrolment secret is known only to the client, so disabling uses a code
+  // The enrollment secret is known only to the client, so disabling uses a code
   // from the authenticator - here, the one the mock stored.
   const stored = (mock as { account: { otpUrl: string | null } }).account.otpUrl;
   const params = parseOtpauthUrl(stored!);

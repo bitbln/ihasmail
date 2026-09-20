@@ -1,13 +1,14 @@
 import { useSettings } from "@/store/settings";
+import { useAppName } from "@/lib/brand";
 import { PALETTES, effectiveMode, type Mode, type PaletteId } from "@/lib/palette";
 import { Switch, useIsTouch } from "@/ui/misc";
-import { SWIPE_CHOICES, type SwipeAction } from "@/lib/swipe";
+import { SWIPE_CHOICES, type SwipeAction } from "@/lib/input/swipe";
 import { TRANSLATION_ISSUE_URL, UI_LANGUAGES } from "@/lib/languages";
 import { t as translate, tNode } from "@/lib/i18n";
 import { isEnforced } from "@/lib/settingsPolicy";
 
 /**
- * A swatch for each palette, drawn from the colours that palette actually
+ * A swatch for each palette, drawn from the colors that palette actually
  * paints, so a card looks like what picking it does. Kept as data rather than
  * inline ternaries so a sixth palette does not mean editing a conditional in
  * three places.
@@ -75,6 +76,7 @@ const ACCENTS = [
 ];
 
 export function AppearanceSettings() {
+  const appName = useAppName();
   const s = useSettings((st) => st.settings);
   const update = useSettings((st) => st.update);
   const prefersDark = Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches);
@@ -84,7 +86,7 @@ export function AppearanceSettings() {
   return (
     <div>
       <h1>{translate("Appearance")}</h1>
-      <p className="lead">{translate("Make ihasmail yours.")}</p>
+      <p className="lead">{translate("Make {app} yours.", { app: appName })}</p>
       <h2>{translate("Theme")}</h2>
       <div className="mode-switch" role="group" aria-label={translate("Light or dark")}>
         {MODES.map((m) => (
@@ -107,20 +109,20 @@ export function AppearanceSettings() {
         })}
       </div>
       <p className="hint" style={{ marginTop: 10 }}>
-        {translate("Palettes named after another project are that project's work, used under its own licence; the shades between their published colours are derived, and every one is checked for contrast. The accent colour below still applies over any of them.")}
+        {translate("Palettes named after another project are that project's work, used under its own license; the shades between their published colors are derived, and every one is checked for contrast. The accent color below still applies over any of them.")}
       </p>
       <Switch
         checked={s.themeMessageBody}
         onChange={(v) => update({ themeMessageBody: v })}
         label={translate("Apply the theme to messages too")}
-        hint={translate("Plain-text mail already follows the theme. With this on, HTML mail that brings no colours of its own does as well, instead of sitting on a white card. Messages that style themselves are left exactly as the sender designed them.")}
+        hint={translate("Plain-text mail already follows the theme. With this on, HTML mail that brings no colors of its own does as well, instead of sitting on a white card. Messages that style themselves are left exactly as the sender designed them.")}
       />
       <Switch
         checked={s.themeStyledMessages}
         disabled={!s.themeMessageBody}
         onChange={(v) => update({ themeStyledMessages: v })}
         label={translate("Apply it even to mail that styles itself")}
-        hint={translate("Most marketing and receipt mail sets a colour somewhere, so the setting above leaves nearly all of it on a white card. With this on, the theme is forced over the sender's own colours: backgrounds they laid the message on are dropped, while buttons and coloured banners are kept so their text stays readable. Some mail will not survive it intact, which is why it is separate.")}
+        hint={translate("Most marketing and receipt mail sets a color somewhere, so the setting above leaves nearly all of it on a white card. With this on, the theme is forced over the sender's own colors: backgrounds they laid the message on are dropped, while buttons and colored banners are kept so their text stays readable. Some mail will not survive it intact, which is why it is separate.")}
       />
 
       <h2>{translate("Accent color")}</h2>
@@ -178,7 +180,7 @@ export function AppearanceSettings() {
         </p>
       )}
       <p className="hint">
-        {translate("Only languages ihasmail has been translated into appear here, so this list grows as translations land rather than ahead of them — a language offered without strings behind it would leave the page claiming to be in a language it is not.")}
+        {translate("Only languages {app} has been translated into appear here, so this list grows as translations land rather than ahead of them — a language offered without strings behind it would leave the page claiming to be in a language it is not.", { app: appName })}
       </p>
       <p className="hint">
         
@@ -209,7 +211,7 @@ export function AppearanceSettings() {
         </div>
       </div>
       {/*
-        Said once, where it is relevant, rather than greying the pickers out on
+        Said once, where it is relevant, rather than graying the pickers out on
         a desktop: the settings are real and worth setting here for the phone
         that will read them, and a disabled control invites a hunt for whatever
         would enable it.

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { CAP, client, setErrorMessage } from "@/jmap/client";
 import type { GetResponse, Id, SetResponse, SieveScript } from "@/jmap/types";
-import { rulesToSieve, scriptDamage, sieveToRules, type SieveRule } from "@/lib/sieve";
+import { rulesToSieve, scriptDamage, sieveToRules, type SieveRule } from "@/lib/sieve/sieve";
 import { useSession } from "./session";
 
 export const IHASMAIL_SCRIPT = "ihasmail";
@@ -108,7 +108,7 @@ export const useSieve = create<SieveState>((set, get) => ({
 
   async saveRules(rules) {
     const existing = get().scripts.find((s) => s.name === IHASMAIL_SCRIPT) ?? null;
-    // The last line of defence. Writing rules replaces the whole script, so
+    // The last line of defense. Writing rules replaces the whole script, so
     // doing it from a baseline we never managed to read deletes whatever was
     // there. Refusing is recoverable; overwriting is not.
     if (existing) {

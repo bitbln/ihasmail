@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { accountKey, loadRaw, saveJson } from "@/lib/storage";
-import { CAP, chunk, client, setErrorMessage } from "@/jmap/client";
-import type { AddressBook, ContactCard, EmailAddress, GetResponse, Id, Principal, QueryResponse, SetError, SetResponse } from "@/jmap/types";
+import { CAP, chunk, client, JmapMethodError, setErrorMessage } from "@/jmap/client";
+import type { AddressBook, ChangesResponse, ContactCard, EmailAddress, GetResponse, Id, Principal, QueryResponse, SetError, SetResponse } from "@/jmap/types";
 import { contactDisplayName, contactEmails, sortKey } from "@/lib/contacts";
 import { parseLdif, uidFromDn } from "@/lib/ldif";
 import { cardFromLdif } from "@/lib/mozillaAb";
@@ -26,7 +26,7 @@ import { useMail } from "./mail";
  * `ContactCard/set` down they are the same" was always claiming and is now
  * true of.
  *
- * [#173]: https://github.com/Coffey-Labs/ihasmail/issues/173
+ * [#173]: https://git.coffeylabs.org/coffey-labs/ihasmail-github-archive/issues/173
  */
 /**
  * The UIDs an address book already holds.
@@ -83,7 +83,7 @@ async function scanBook(accountId: Id, addressBookId: Id): Promise<{ byUid: Map<
  * confusion rather than duplication, and being told costs nothing.
  *
  * One key per address, so a person whose second address matches is still
- * recognised.
+ * recognized.
  */
 function likenessKeys(c: Partial<ContactCard>): string[] {
   const name = contactDisplayName(c as ContactCard).trim().toLowerCase();
@@ -173,6 +173,8 @@ interface ContactsState {
   available: boolean;
   books: Record<Id, AddressBook>;
   cards: Record<Id, ContactCard>;
+  /** The server's ContactCard state `cards` was read at, for asking what changed since. */
+  cardState: string | null;
   loaded: boolean;
   loading: boolean;
   error: string | null;
@@ -189,6 +191,11 @@ interface ContactsState {
   init(): Promise<void>;
   loadBooks(): Promise<void>;
   loadAll(): Promise<void>;
+  /**
+   * Bring `cards` up to date with what changed on the server, or load them all
+   * when that cannot be worked out.
+   */
+  syncCards(): Promise<void>;
   /** Books and cards from accounts that shared with the reader. */
   loadShared(): Promise<void>;
   select(selection: BookSelection): void;
@@ -225,7 +232,7 @@ interface ContactsState {
   /**
    * Import an address book in LDIF, read against Mozilla's schema.
    *
-   * Mozilla's schema has no UID, so a re-import is recognised by the entry's
+   * Mozilla's schema has no UID, so a re-import is recognized by the entry's
    * `dn` instead -- the same update-rather-than-duplicate rule the vCard import
    * follows, on the only identity the file carries. `alike` is what is left
    * over: entries that were created and still look like somebody already here,
@@ -247,6 +254,7 @@ export const useContacts = create<ContactsState>((set, get) => ({
   available: false,
   books: {},
   cards: {},
+  cardState: null,
   loaded: false,
   loading: false,
   error: null,
@@ -264,11 +272,18 @@ export const useContacts = create<ContactsState>((set, get) => ({
     // should move when the switcher does.
     const accountId = useSession.getState().ownAccountFor(CAP.contacts);
     const available = Boolean(accountId && client.hasCapability(CAP.contacts));
-    if (accountId !== get().accountId) set({ accountId, books: {}, cards: {}, loaded: false, selection: { accountId: null, bookId: "all" } });
+    if (accountId !== get().accountId) set({ accountId, books: {}, cards: {}, cardState: null, loaded: false, selection: { accountId: null, bookId: "all" } });
     set({ available });
     if (!available) return;
     await get().loadBooks();
     void get().loadShared();
+    /*
+     * The cards too, in the background. The avatars in the mail list come from
+     * them, and nothing else loaded them until Contacts was opened or an
+     * address was typed -- so a photo appeared once somebody did either, and
+     * was gone again after the next reload (#376).
+     */
+    if (!get().loaded) void get().loadAll();
   },
 
   /*
@@ -294,7 +309,9 @@ export const useContacts = create<ContactsState>((set, get) => ({
     }
     const books: SharedBook[] = [];
     const cards: Record<string, ContactCard> = {};
-    for (const [accountId, account] of accounts) {
+    // Every account at once: calls made in one tick share a request, where a
+    // loop sent one after another for each account shared with the reader.
+    await Promise.all(accounts.map(async ([accountId, account]) => {
       try {
         const res = await client.call<GetResponse<AddressBook>>("AddressBook/get", { accountId, ids: null, properties: ADDRESS_BOOK_PROPS });
         for (const book of res.list) books.push({ accountId, accountName: account.name, book });
@@ -310,7 +327,7 @@ export const useContacts = create<ContactsState>((set, get) => ({
          */
         const added = new Set(useSettings.getState().settings.addedShares);
         const wanted = new Set(res.list.filter((b) => b.isSubscribed || added.has(sharedKey(accountId, b.id))).map((b) => b.id));
-        if (!wanted.size) continue;
+        if (!wanted.size) return;
         // One page. A shared book is a colleague's contacts, not an archive,
         // and the alternative is holding the reader's own list hostage to it.
         const cardsRes = await client.chain([
@@ -325,9 +342,11 @@ export const useContacts = create<ContactsState>((set, get) => ({
       } catch {
         // An account that refuses is one that shared nothing here. Not an
         // error to show: the reader did not ask for it and cannot act on it.
-        continue;
       }
-    }
+    }));
+    // Answers arrive in any order; list the books in the session's.
+    const order = new Map(accounts.map(([id], i) => [id, i]));
+    books.sort((a, b) => (order.get(a.accountId) ?? 0) - (order.get(b.accountId) ?? 0));
     set({ sharedBooks: books, sharedCards: cards, sharedLoaded: true });
   },
 
@@ -404,6 +423,7 @@ export const useContacts = create<ContactsState>((set, get) => ({
       const cards: Record<Id, ContactCard> = {};
       let position = 0;
       const limit = 500;
+      let cardState: string | null = null;
       for (let guard = 0; guard < 50; guard++) {
         const res = await client.chain([
           ["ContactCard/query", { accountId, position, limit, calculateTotal: true }, "q"],
@@ -412,12 +432,60 @@ export const useContacts = create<ContactsState>((set, get) => ({
         const q = res.get("q")?.[0] as unknown as QueryResponse;
         const g = res.get("g")?.[0] as unknown as GetResponse<ContactCard>;
         for (const c of g.list) cards[c.id] = c;
+        // The first page's: a change made while the rest were being read is
+        // then reported again by the next sync, rather than missed.
+        cardState ??= g.state;
         position += q.ids.length;
         if (q.ids.length < limit || (q.total != null && position >= q.total)) break;
       }
-      set({ cards, loaded: true, loading: false, error: null });
+      set({ cards, cardState, loaded: true, loading: false, error: null });
     } catch (err) {
       set({ loading: false, error: (err as Error).message });
+    }
+  },
+
+  /*
+   * What changed, rather than everything again.
+   *
+   * Every push that touched a card, and every edit made here, used to reload
+   * the whole address book -- up to fifty pages of five hundred cards with all
+   * their properties -- to pick up one change. ContactCard/changes names what
+   * changed since the state the cards were read at, and only those are fetched.
+   * A server that cannot say (`cannotCalculateChanges`), or any other failure,
+   * falls back to the full load, which is what happened before.
+   */
+  async syncCards() {
+    const { accountId, cardState, loaded } = get();
+    if (!accountId || !loaded || !cardState) return get().loadAll();
+    try {
+      const changed = new Set<Id>();
+      const destroyed = new Set<Id>();
+      let since = cardState;
+      for (let guard = 0; guard < 50; guard++) {
+        const ch = await client.call<ChangesResponse>("ContactCard/changes", { accountId, sinceState: since, maxChanges: 500 });
+        for (const id of [...ch.created, ...ch.updated]) { changed.add(id); destroyed.delete(id); }
+        for (const id of ch.destroyed) { destroyed.add(id); changed.delete(id); }
+        since = ch.newState;
+        if (!ch.hasMoreChanges) break;
+      }
+      const fetched = await Promise.all(
+        chunk([...changed], client.maxObjectsInGet).map((part) => client.call<GetResponse<ContactCard>>("ContactCard/get", { accountId, ids: part })),
+      );
+      if (get().accountId !== accountId) return;
+      set((s) => {
+        const cards = { ...s.cards };
+        for (const id of destroyed) delete cards[id];
+        for (const r of fetched) {
+          for (const c of r.list) cards[c.id] = c;
+          // An id listed as changed but gone by the time it was asked for.
+          for (const id of r.notFound ?? []) delete cards[id];
+        }
+        return { cards, cardState: since, error: null };
+      });
+    } catch (err) {
+      if (!(err instanceof JmapMethodError) || err.type !== "cannotCalculateChanges") console.warn("[ihasmail] contact sync failed, reloading:", err);
+      set({ cardState: null });
+      await get().loadAll();
     }
   },
 
@@ -542,7 +610,7 @@ export const useContacts = create<ContactsState>((set, get) => ({
         refused ??= Object.values(res.notDestroyed ?? {})[0] ?? Object.values(res.notUpdated ?? {})[0];
       }
     } finally {
-      await get().loadAll();
+      await get().syncCards();
     }
     return { destroyed: gone.length, unfiled, refused };
   },
@@ -570,7 +638,7 @@ export const useContacts = create<ContactsState>((set, get) => ({
     const err = res.notDestroyed?.[id];
     if (err) throw new Error(setErrorMessage(err));
     await get().loadBooks();
-    await get().loadAll();
+    await get().syncCards();
   },
 
   async importVCard(text, addressBookId) {
@@ -619,7 +687,7 @@ export const useContacts = create<ContactsState>((set, get) => ({
          matched on it rather than guessed at. */
       return { created, updated, alike: 0 };
     } finally {
-      await get().loadAll();
+      await get().syncCards();
     }
   },
 
@@ -687,7 +755,7 @@ export const useContacts = create<ContactsState>((set, get) => ({
       if (!created && !updated) throw new Error(refused ? setErrorMessage(refused) : "the server did not accept any of its contacts");
       return { created, updated, alike };
     } finally {
-      await get().loadAll();
+      await get().syncCards();
     }
   },
 
@@ -782,7 +850,7 @@ export const useContacts = create<ContactsState>((set, get) => ({
 
   applyChanges(types) {
     if (types.has("AddressBook")) { void get().loadBooks(); void get().loadShared(); }
-    if (types.has("ContactCard") && get().loaded) void get().loadAll();
+    if (types.has("ContactCard") && get().loaded) void get().syncCards();
   },
 }));
 

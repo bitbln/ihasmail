@@ -97,11 +97,11 @@ export interface DialogChoice {
    * The safe answer, given the weight a dialog's confirm button has.
    *
    * A list of choices has no default until one is said to be, and the
-   * destructive one must not become it by being the only thing with a colour --
+   * destructive one must not become it by being the only thing with a color --
    * which is what "Discard changes" was, on a guard whose whole purpose is to
    * stop you losing work ([#175]).
    *
-   * [#175]: https://github.com/Coffey-Labs/ihasmail/issues/175
+   * [#175]: https://git.coffeylabs.org/coffey-labs/ihasmail-github-archive/issues/175
    */
   primary?: boolean;
 }
@@ -185,7 +185,8 @@ export function ConfirmHost() {
         )
       }
     >
-      {req.message && <p style={{ marginTop: 0 }}>{req.message}</p>}
+      {/* A paragraph for text; a block for anything with blocks of its own in it. */}
+      {req.message && (typeof req.message === "string" ? <p style={{ marginTop: 0 }}>{req.message}</p> : <div style={{ marginTop: 0 }}>{req.message}</div>)}
       {req.kind === "choice" && (
         <div className="dialog-choices">
           {req.choices?.map((c) => (

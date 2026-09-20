@@ -9,7 +9,7 @@
  * so a node has one shape and there is nothing left to detect.
  */
 import type { FileNode, Id } from "@/jmap/types";
-import { descendantIds } from "./folderMove";
+import { descendantIds } from "./mailbox/folderMove";
 
 /** Properties to request for a node. */
 export function fileNodeProps(): string[] {
@@ -54,7 +54,7 @@ export function isShared(node: Pick<FileNode, "shareWith">): boolean {
  * legal moves behind a disabled drop. The server refuses those with a message
  * of its own, which is a better answer than a silent one.
  */
-/** The MIME a dragged node is offered under, so a target can recognise it. */
+/** The MIME a dragged node is offered under, so a target can recognize it. */
 export const NODE_MIME = "application/x-ihasmail-filenode";
 
 /**

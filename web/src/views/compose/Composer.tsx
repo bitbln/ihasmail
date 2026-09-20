@@ -9,14 +9,14 @@ import { RichEditor, type RichEditorHandle } from "./RichEditor";
 import { MenuItem, MenuSep, MenuTitle, Popover, useMenu } from "@/ui/popover";
 import { confirmDialog, promptDialog } from "@/ui/dialog";
 import { formatSize, formatRelative } from "@/lib/format";
-import { htmlToText, textToHtml } from "@/lib/text";
+import { htmlToText, textToHtml } from "@/lib/text/text";
 import { isValidEmail, uniqueAddresses } from "@/lib/address";
 import { crossesRecipientThreshold, externalRecipients, internalDomains } from "@/lib/warnings";
 import { attachmentIcon } from "../mail/MessageView";
 import { FilePicker } from "./FilePicker";
 import { RecipientPicker, type Field } from "./RecipientPicker";
 import { useFiles } from "@/store/files";
-import { keyboard } from "@/lib/keyboard";
+import { keyboard } from "@/lib/input/keyboard";
 import { useIsMobile } from "@/ui/misc";
 import { toast } from "@/ui/toast";
 import { ScheduleDialog, ScheduleMenuItems } from "./SchedulePicker";
@@ -123,7 +123,7 @@ export function Composer({ draft }: { draft: Draft }) {
         const names = outside.slice(0, 5).map((a) => a.email).join(", ");
         const rest = outside.length > 5 ? translate(" and {count} more", { count: String(outside.length - 5) }) : "";
         const ok = await confirmDialog({
-          title: translate("Send outside your organisation?"),
+          title: translate("Send outside your organization?"),
           message: translate("This goes to {recipients}{rest}.", { recipients: names, rest }),
           confirmLabel: translate("Send anyway"),
         });
@@ -147,11 +147,26 @@ export function Composer({ draft }: { draft: Draft }) {
     patch({ sendAt: at.getTime() });
   };
 
+  /*
+   * Switching format converts what has been written, but the quoted message
+   * is not something this draft wrote: it was prepared in both formats when
+   * the reply opened. Converting the plain-text quote into HTML would hand
+   * back a flattened copy of a message that still exists in its original
+   * markup, so re-attach that instead, and keep only what the author typed
+   * above it. Where the quote can no longer be found -- edited, or a draft
+   * that quotes nothing -- convert the whole body as before.
+   */
   const toggleFormat = () => {
+    // Whichever way the format is changed, the offer has been answered.
     if (d.format === "html") {
-      patch({ format: "text", text: htmlToText(d.html) });
+      const at = d.quoteHtml ? d.html.indexOf('<div class="ihm-quote">') : -1;
+      const written = at >= 0 ? htmlToText(d.html.slice(0, at)) : htmlToText(d.html);
+      patch({ format: "text", text: at >= 0 ? written.replace(/\s+$/, "") + d.quoteText : written, formatOffer: null });
     } else {
-      patch({ format: "html", html: textToHtml(d.text, { linkify: false, quoteColors: false }).replace(/\n/g, "<br>") });
+      const keeps = Boolean(d.quoteText) && d.text.endsWith(d.quoteText);
+      const written = keeps ? d.text.slice(0, d.text.length - d.quoteText.length) : d.text;
+      const asHtml = textToHtml(written, { linkify: false, quoteColors: false }).replace(/\n/g, "<br>");
+      patch({ format: "html", html: keeps ? asHtml + d.quoteHtml : asHtml, formatOffer: null });
     }
   };
 
@@ -220,7 +235,7 @@ export function Composer({ draft }: { draft: Draft }) {
                   already knows the name they are half-way through typing. */}
               <button type="button" className="link-btn" onClick={() => setAddressBookOpen(true)} title={translate("Choose from address books")}>{translate("To")}</button>
             </label>
-            <RecipientInput id={`${key}-to`} value={d.to} onChange={(to) => patch({ to })} placeholder={translate("Recipients")} autoFocus={initialFocus === "to"} />
+            <RecipientInput id={`${key}-to`} value={d.to} exclude={[...d.cc, ...d.bcc]} onChange={(to) => patch({ to })} placeholder={translate("Recipients")} autoFocus={initialFocus === "to"} />
             <span className="field-extra">
               {/* Beside Cc and Bcc, because that is where someone looks when
                   they are thinking about who the message goes to. The label
@@ -240,13 +255,13 @@ export function Composer({ draft }: { draft: Draft }) {
           {d.showCc && (
             <div className="composer-field">
               <label htmlFor={`${key}-cc`}>{translate("Cc")}</label>
-              <RecipientInput id={`${key}-cc`} value={d.cc} onChange={(cc) => patch({ cc })} />
+              <RecipientInput id={`${key}-cc`} value={d.cc} exclude={[...d.to, ...d.bcc]} onChange={(cc) => patch({ cc })} />
             </div>
           )}
           {d.showBcc && (
             <div className="composer-field">
               <label htmlFor={`${key}-bcc`}>{translate("Bcc")}</label>
-              <RecipientInput id={`${key}-bcc`} value={d.bcc} onChange={(bcc) => patch({ bcc })} />
+              <RecipientInput id={`${key}-bcc`} value={d.bcc} exclude={[...d.to, ...d.cc]} onChange={(bcc) => patch({ bcc })} />
             </div>
           )}
           <div className="composer-field">
@@ -261,6 +276,22 @@ export function Composer({ draft }: { draft: Draft }) {
             )}
           </div>
         </div>
+        {/*
+          Replying in one format to a message written in the other loses
+          something either way: the formatting of a rich reply, or the plain
+          text somebody chose to write in. The draft opens in the format the
+          settings ask for, and this offers the other one for this message
+          only, rather than quietly overriding the setting (#407).
+        */}
+        {d.formatOffer && (
+          <div className="composer-notice">
+            <span>{d.formatOffer === "html" ? translate("This message is rich text") : translate("This message is plain text")}</span>
+            <button type="button" className="btn btn-sm" onClick={toggleFormat}>
+              {d.formatOffer === "html" ? translate("Switch to rich text") : translate("Switch to plain text")}
+            </button>
+            <button type="button" className="icon-btn sm" aria-label={translate("Dismiss")} onClick={() => patch({ formatOffer: null })}><X size={14} /></button>
+          </div>
+        )}
         {d.format === "html" ? (
           <RichEditor ref={editorRef} html={d.html} onChange={onHtml} placeholder={translate("Write your message…")} spellcheck={settings.spellcheck} onFiles={(files) => addFiles(key, files)} showToolbar={showToolbar} autoFocus={initialFocus === "body"} />
         ) : (

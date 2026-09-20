@@ -24,7 +24,7 @@ interface Props {
   onCreate: (start: Date, end: Date, allDay: boolean) => void;
 }
 
-/** Resolve the display colour of an event: explicit colour → category colour → calendar colour. */
+/** Resolve the display color of an event: explicit color → category color → calendar color. */
 export function eventColor(ev: CalendarEvent, calendarColor: string | null | undefined, categories: Array<{ name: string; color: string }>): string {
   if (ev.color) return ev.color;
   const cat = categoryOf(ev, categories);
@@ -69,7 +69,7 @@ export function CalendarContextMenu({ ctx, onClose, onOpen, onEdit, onCreate }: 
     const scope = await askEditScope(ev);
     if (!scope) return;
     try {
-      const dropped = await runScoped(scope, (s) => cal.updateEvent(ev, p, false, s));
+      const dropped = await runScoped(scope, (s) => cal.updateEvent(ev, p, false, s, inst.accountId));
       if (!dropped) return;
       // A per-occurrence change can be accepted in part. Say which part.
       toast.success(droppedMessage(dropped) ?? (scope === "occurrence" ? `${msg} for this date` : msg));
@@ -77,15 +77,17 @@ export function CalendarContextMenu({ ctx, onClose, onOpen, onEdit, onCreate }: 
       toast.error((err as Error).message);
     }
   };
-  const setColor = (color: string | null) => void patch({ color }, color ? t("Colour updated") : t("Custom colour removed"));
+  const setColor = (color: string | null) => void patch({ color }, color ? t("Color updated") : t("Custom color removed"));
   const setCategory = (cat: { name: string; color: string } | null) => {
     const categoriesPatch = cat ? { [cat.name]: true } : null;
-    void patch({ categories: categoriesPatch, color: cat ? cat.color : null }, cat ? t("Categorised as {name}", { name: cat.name }) : t("Category cleared"));
+    void patch({ categories: categoriesPatch, color: cat ? cat.color : null }, cat ? t("Categorized as {name}", { name: cat.name }) : t("Category cleared"));
   };
   const duplicate = async () => {
     const { id: _i, baseEventId: _b, uid: _u, utcStart: _s, utcEnd: _e, isOrigin: _o, calendarIds, created: _c, updated: _up, sequence: _sq, recurrenceId: _ri, recurrenceIdTimeZone: _rt, ...rest } = ev as CalendarEvent & Record<string, unknown>;
     try {
-      await cal.createEvent({ ...rest, title: t("Copy of {title}", { title: ev.title ?? t("event") }), participants: undefined, replyTo: undefined, organizerCalendarAddress: undefined } as Partial<CalendarEvent>, Object.keys(calendarIds)[0] ?? Object.keys(cal.calendars)[0]!, false);
+      // The copy goes into the same calendar, so into the same account.
+      const sameCal = Object.keys(calendarIds)[0];
+      await cal.createEvent({ ...rest, title: t("Copy of {title}", { title: ev.title ?? t("event") }), participants: undefined, replyTo: undefined, organizerCalendarAddress: undefined } as Partial<CalendarEvent>, sameCal ?? Object.keys(cal.calendars)[0]!, false, sameCal ? inst.accountId : undefined);
       toast.success(t("Event duplicated"));
     } catch (err) {
       toast.error((err as Error).message);
@@ -101,7 +103,7 @@ export function CalendarContextMenu({ ctx, onClose, onOpen, onEdit, onCreate }: 
     }
     if (!scope) return;
     try {
-      await runScoped(scope, (s) => cal.destroyEvent(ev, participants > 1, s));
+      await runScoped(scope, (s) => cal.destroyEvent(ev, participants > 1, s, inst.accountId));
       toast.success(scope === "occurrence" ? "Occurrence deleted" : "Event deleted");
     } catch (err) {
       toast.error((err as Error).message);
@@ -123,16 +125,16 @@ export function CalendarContextMenu({ ctx, onClose, onOpen, onEdit, onCreate }: 
           <MenuItem icon={<X size={16} />} label={t("No category")} disabled={!currentCat} onClick={() => { onClose(); setCategory(null); }} />
           <MenuItem icon={<Tag size={16} />} label={t("Manage categories…")} onClick={() => { onClose(); navigate("/settings/calendar"); }} />
           {/*
-            A colour is what a category already carries, so a second way to set
+            A color is what a category already carries, so a second way to set
             one just made two things that could disagree. Picking a category is
-            now the only way to colour an event here.
+            now the only way to color an event here.
 
             Clearing one stays, though, and only when there is one to clear: an
-            event that already has an explicit colour — set before this, or by
+            event that already has an explicit color — set before this, or by
             another client — would otherwise ignore its category for ever with
             nothing on the menu to say why.
           */}
-          {ev.color && <MenuItem icon={<Palette size={16} />} label={t("Clear custom colour")} onClick={() => { onClose(); setColor(null); }} />}
+          {ev.color && <MenuItem icon={<Palette size={16} />} label={t("Clear custom color")} onClick={() => { onClose(); setColor(null); }} />}
           <MenuSep />
           <MenuItem danger icon={<Trash2 size={16} />} label={t("Delete")} onClick={() => void del()} />
         </>

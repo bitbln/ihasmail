@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import { BookOpen, Calendar, ChevronsUpDown, FolderOpen, Globe, HelpCircle, LogOut, Mail, Menu as MenuIcon, Moon, PenSquare, Plus, RefreshCw, Settings, ShieldCheck, Sun, Upload, Users, X } from "lucide-react";
 import { useSession } from "@/store/session";
@@ -13,23 +13,26 @@ import { MenuItem, MenuSep, Popover, useMenu } from "@/ui/popover";
 import { Splitter } from "@/ui/Splitter";
 import { SearchBar } from "./SearchBar";
 import { MailboxTree } from "./mail/MailboxTree";
-import { FilesTree } from "./files/FilesTree";
-import { ContactsSidebar } from "./contacts/ContactsSidebar";
-import { CalendarSidebar } from "./calendar/CalendarSidebar";
 import { ShortcutsDialog, useGlobalShortcuts } from "./Shortcuts";
 import { MailboxPicker } from "./mail/MailboxPicker";
 import { formatSize } from "@/lib/format";
 import { collectShare } from "@/lib/shareTarget";
+import { offerShare } from "./ShareOffer";
 import { TranslateBoundary } from "@/ui/TranslateBoundary";
 import { t } from "@/lib/i18n";
-import { hasAdministration } from "@/lib/adminAccess";
+import { hasAdministration } from "@/lib/admin/adminAccess";
 import { usePermissions } from "./admin/usePermissions";
 import { AdminNav } from "./admin/AdminNav";
+
+// The other sections' sidebars load with the section, as their views already do.
+const FilesTree = lazy(() => import("./files/FilesTree").then((m) => ({ default: m.FilesTree })));
+const ContactsSidebar = lazy(() => import("./contacts/ContactsSidebar").then((m) => ({ default: m.ContactsSidebar })));
+const CalendarSidebar = lazy(() => import("./calendar/CalendarSidebar").then((m) => ({ default: m.CalendarSidebar })));
 
 /*
  * How far the sidebar edge can be dragged. Below about 228px the module bar
  * cuts "Calendar" and "Contacts" short in English; the floor sits a little
- * above that. Long folder names are allowed to ellipsise -- narrowing the pane
+ * above that. Long folder names are allowed to ellipsize -- narrowing the pane
  * is asking for that. The ceiling keeps a list and a reading pane beside it on
  * an ordinary laptop screen.
  */
@@ -117,11 +120,12 @@ export function AppShell({ children }: { children: ReactNode }) {
    * `addFiles` uploads as it goes, and there is nothing to upload to until the
    * session is in place. AppShell only exists once there is one.
    */
+  // Asked about first, not opened straight away: see `offerShare`.
   useEffect(() => {
-    void collectShare().then((share) => {
+    void collectShare().then(async (share) => {
       if (!share) return;
-      openShare(share);
       if (new URLSearchParams(window.location.search).has("share")) navigate("/mail", { replace: true });
+      await offerShare(share, openShare);
     });
   }, [openShare, navigate]);
 
@@ -182,7 +186,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             {/* The project site. It is linked from the login screen footer, which
                 is a page a signed-in user never sees again -- so from inside the
                 app there was no way back to it. */}
-            <MenuItem icon={<Globe size={16} />} label={t("About ihasmail")} href="https://ihasmail.org" external />
+            <MenuItem icon={<Globe size={16} />} label={t("About {app}", { app: appName })} href="https://ihasmail.org" external />
             <MenuItem icon={<Settings size={16} />} label={t("Settings")} onClick={() => navigate("/settings")} />
             {/* Only for an account whose Stalwart role manages other accounts.
                 Nobody else is shown an entry that would open onto refusals. */}
@@ -252,9 +256,11 @@ export function AppShell({ children }: { children: ReactNode }) {
           </button>
           <div className="sidebar-scroll">
             {(section === "mail" || section === "search") && <MailboxTree />}
-            {section === "calendar" && <CalendarSidebar />}
-            {section === "contacts" && <ContactsSidebar />}
-            {section === "files" && <FilesTree />}
+            <Suspense fallback={null}>
+              {section === "calendar" && <CalendarSidebar />}
+              {section === "contacts" && <ContactsSidebar />}
+              {section === "files" && <FilesTree />}
+            </Suspense>
             {section === "settings" && <div className="nav-section"><span>{t("Settings")}</span></div>}
             {section === "admin" && <AdminNav />}
           </div>
@@ -399,7 +405,7 @@ function ThemeToggle() {
   const prefersDark = Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches);
   const next = toggleTarget({ palette: settings.palette, mode: settings.mode }, prefersDark);
   // Name where it is going, and by the palette when the palette is changing --
-  // going back to ihasmail's own colours is not the same as "dark mode".
+  // going back to ihasmail's own colors is not the same as "dark mode".
   // The palette never changes now, so the label is only ever the side.
   const label = next.mode === "light" ? t("light mode") : t("dark mode");
   return (

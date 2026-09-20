@@ -13,7 +13,7 @@ questions:
 | [docs.ihasmail.org](https://docs.ihasmail.org) | How to install, configure and drive each of these |
 
 Written against the tree at Stalwart **0.16.22**, which is the version the live
-instance runs. Behaviours carrying an older version below were checked against
+instance runs. Behaviors carrying an older version below were checked against
 that one and have not changed since; where a later release changed something,
 the entry says so and names both. 0.16.22 changed nothing described here: its
 client-visible changes are in what `CalendarEvent/get` and `ContactCard/get`
@@ -103,7 +103,7 @@ every drag.
   archives and left deletes by default, which is what the mail app the phone
   came with already does. Either direction can be set to archive, delete,
   report spam, read/unread, star or move to… — or to nothing, which turns that
-  direction off. The coloured strip revealed behind the row names what will
+  direction off. The colored strip revealed behind the row names what will
   actually happen *in the folder it is happening in*: "Delete forever" out of
   Deleted Items, "Not spam" inside Junk Mail. Where an action
   is meaningless there — archiving out of the archive, calling your own drafts
@@ -143,14 +143,14 @@ it is silently nothing there.
 
 The arithmetic lives in `web/src/lib/touch.ts`, away from the components and
 under test, because the numbers are the whole thing. The axis lock is
-deliberately biased towards the vertical: scrolling is what a finger on a
+deliberately biased toward the vertical: scrolling is what a finger on a
 message list is doing almost every time, and a scroll misread as a swipe grabs
 the list out from under the reader, while a swipe misread as a scroll costs one
 more attempt. A drag that is merely more sideways than not stays a scroll.
 
 ## The message list
 
-- **Virtualised** — rows are windowed with `@tanstack/react-virtual`, so a
+- **Virtualized** — rows are windowed with `@tanstack/react-virtual`, so a
   folder of 100,000 messages scrolls at the same speed as one of ten. Row
   height follows density and the one- or two-line layout.
 - **Infinite scroll** with server-side paging, 50 at a time by default.
@@ -236,28 +236,35 @@ for that one, and the dialog says so.
 
 ## Folders
 
-Real JMAP mailboxes, with the server's roles honoured.
+Real JMAP mailboxes, with the server's roles honored.
 
 - Create, rename, create a subfolder, delete (with or without its mail).
-- **Drag a folder onto another** to reparent it. Folders with a server role
-  (Inbox, Sent, Drafts, Trash, Junk, Archive) are structural and are not
-  offered the drag, because the server refuses to move them anyway.
+- **Order:** Inbox first, then the other special folders (Drafts, Sent,
+  Archive, Junk, Trash), then everything else A–Z, at every level.
+- **Drag a folder between two others** to put it there. The line shows where
+  it will land. The order is saved on the server as the folders' JMAP
+  `sortOrder`, so it follows you to every device, and other clients that
+  honor `sortOrder` show it too. *Move up* and *Move down* in the folder menu
+  do the same from the keyboard or on touch. Inbox always stays first.
+- **Drag a folder onto the middle of another** to reparent it. Folders with a
+  server role (Sent, Drafts, Trash, Junk, Archive) can be reordered but not
+  nested, because the server refuses to move them to another parent.
 - **Subscribe / unsubscribe** — *Show in list* / *Hide from list*. An
   unsubscribed folder still exists and still receives; it is just out of the
   way. Inbox cannot be hidden.
 - **Mark all as read**, optionally including subfolders.
-- **Folder colours**, per mailbox id.
+- **Folder colors**, per mailbox id.
 - **Unread counts** per folder, live.
 - **Storage quota** bar under the tree where the server reports one.
 - Rights are respected per folder: rename, delete, create-child and share each
-  grey out when `myRights` says no.
+  gray out when `myRights` says no.
 - A folder in the address that this account does not have says *this folder is
   missing*, rather than drawing an empty folder — a stale link should not read
   as a folder that emptied itself.
 
 ## Labels
 
-Labels are **IMAP keywords** with a colour and a display name kept in settings.
+Labels are **IMAP keywords** with a color and a display name kept in settings.
 Because they are keywords, every other client that reads the mailbox sees them,
 and they survive ihasmail entirely. A message can carry any number. They are
 managed in Settings › Labels, applied from `l` or the context menu, and
@@ -311,7 +318,7 @@ same query string — so what it builds can be read, edited and learned from.
 
 ## Reading a message
 
-- **Sanitised HTML**, rendered inside a **Shadow DOM** so the sender's CSS
+- **Sanitized HTML**, rendered inside a **Shadow DOM** so the sender's CSS
   cannot reach the app. DOMPurify strips scripts, event handlers, forms and
   anything that could navigate the top window.
 - **Remote images blocked by default**, with a banner offering *Show images* or
@@ -370,14 +377,14 @@ same query string — so what it builds can be read, edited and learned from.
   since the filter applies policy ihasmail cannot see. Mail that arrived without
   these headers shows nothing.
 - **Message body theming** is off by default — sender HTML is left exactly as it
-  was designed, on a light card. One setting lets mail that brings no colours of
+  was designed, on a light card. One setting lets mail that brings no colors of
   its own follow the app's theme instead. That is a low bar in practice: one
   `color:#FFFFFF` on one button label opts a whole message out, so for mail
   built from a template it changed nothing. A second setting, off unless the
-  first is on, forces the theme over the sender's own colours. It tells a
+  first is on, forces the theme over the sender's own colors. It tells a
   *sheet* the design sits on, like a white wrapper table, from a *painted
   surface* like a button or a banner, by relative luminance: the first is
-  neutralised so the bright card goes away, the second is kept whole so its
+  neutralized so the bright card goes away, the second is kept whole so its
   label stays readable on it. Nothing the sender wrote is removed, so the
   switch is reversible, and print is unaffected either way.
 
@@ -397,7 +404,7 @@ same query string — so what it builds can be read, edited and learned from.
 
 - **Invitations (iTIP)** render an invite card: what, when, where, the guest
   list with each person's status, and Yes / Maybe / No. The reply is written to
-  the event and sent back to the organiser. Cancellations are recognised too.
+  the event and sent back to the organizer. Cancellations are recognized too.
 - **vCard attachments** render a card offering to add the person to an address
   book.
 - **Right-click anyone named** in the message — From, To, Cc, Bcc or Reply-To —
@@ -427,13 +434,28 @@ Requesting one on your own outgoing mail is a separate switch.
 ## Composing
 
 **Multiple composers at once**, floating in a dock at the bottom right, each
-minimisable and maximisable; full-screen on mobile.
+minimizable and maximizable; full-screen on mobile.
 
-- **Rich text**: bold, italic, underline, strikethrough, text colour, highlight,
+- **Rich text**: bold, italic, underline, strikethrough, text color, highlight,
   font size, alignment, bulleted and numbered lists, indent/outdent, blockquote,
   code block, links (`Ctrl+K`), inline images, an emoji picker, and remove
   formatting. Tab and Shift+Tab indent inside the body.
 - **Plain text** as a per-message or default format.
+- **Quoting follows the message's own image decision.** A quote renders the
+  message again, so the reply blocks its remote images unless that message was
+  allowed them — by policy, by a trusted sender, by the sender being a
+  contact, or by *Show images* having been pressed on it. Blocked images keep
+  their address and get it back when the reply is sent, so the recipient's
+  copy is the quote as its sender wrote it. Allowed ones are fetched through
+  the server's image proxy, the same as when the message was read, and the
+  sent copy points at their own addresses rather than at this server.
+- **Answering in the format the message was written in.** Replying in plain
+  text to a rich text message, or the reverse, loses either the formatting or
+  the plain text somebody chose to write in. The composer opens in the default
+  format and offers the other one for that message, above the editor; the
+  offer is dismissible and changes no setting. Forwards too. What counts as
+  rich text is the body part's own type, not the presence of `htmlBody`, which
+  RFC 8621 derives for plain-text mail as well.
 - **Recipient chips** with autocomplete from contacts, shared address books you
   have added, the server directory and recent recipients; your own cards win a
   tie against a colleague's copy of the same person. Free-form addresses parse
@@ -468,7 +490,7 @@ minimisable and maximisable; full-screen on mobile.
 - **Attachments** by picking or dragging onto the composer, with progress per
   file and the size limit the server states (`MAX_UPLOAD_BYTES`, 50 MB by
   default). A pasted image is inserted inline instead, and pasted HTML is
-  sanitised on the way in.
+  sanitized on the way in.
 - **Attach from Files** — anything the server already holds attaches with **no
   upload at all**, however large. A file from someone else's shared folder is
   copied to your account first, because a message can only carry blobs from the
@@ -482,6 +504,8 @@ minimisable and maximisable; full-screen on mobile.
   uploaded, which it was not being.
 - **Attachment reminder** when the text mentions an attachment and none is there.
 - **Spell check** toggle.
+- **Open the composer full screen**, as a setting, for anyone whose first
+  move is always Maximize. Off by default; on a phone it changes nothing.
 - **Drafts** save as you type and on close, with the save state shown.
 - **Quoting** on reply, with the signature placed above or below it, and
   reply-all as an optional default.
@@ -509,7 +533,7 @@ out whether or not ihasmail is open, or ever opened again.
 
 Held messages wait in a **Scheduled** folder ihasmail maintains itself (JMAP has
 no role for one), and reconciles when you next open it: released messages move
-to Sent, cancelled ones back to Drafts. The picker offers presets and an exact
+to Sent, canceled ones back to Drafts. The picker offers presets and an exact
 date and time, bounded by the maximum delay the server advertises.
 
 > If Stalwart's `futureRelease` is not configured, a "scheduled" message is sent
@@ -536,14 +560,14 @@ are settings.
 
 The sidebar keeps three groups apart:
 
-- **My calendars** — yours, each with a colour, each hideable with a click.
+- **My calendars** — yours, each with a color, each hideable with a click.
 - **Shared with me** — other people's, once added.
 - **Available to add** — shared with you but not yet added, with a plus beside
   each. An unadded calendar draws nothing. This is deliberate: the server
   reports every collection in an account you can reach, whether or not anyone
   meant to share it, so being handed one is not evidence that it was offered.
 
-Right-click your own to rename, recolour, share, stop sharing or delete;
+Right-click your own to rename, recolor, share, stop sharing or delete;
 right-click one of someone else's to remove it from your view, which changes
 nothing for anybody else.
 
@@ -551,7 +575,7 @@ nothing for anybody else.
   events), from the calendar's own menu, into that calendar. The events are
   filed rather than scheduled: no invitations go out to anyone named in them.
 - **Re-importing updates rather than duplicates**, as a contacts import does.
-  An event is recognised by its UID, per calendar, and what the file carries
+  An event is recognized by its UID, per calendar, and what the file carries
   wins -- so a corrected export corrects what the first attempt got wrong.
 
   Two things are deliberately left alone: **who accepted**, and **edits to a
@@ -566,11 +590,11 @@ nothing for anybody else.
   since the last import does not arrive, because nothing here can tell that
   apart from an answer given in ihasmail. And an import still sends no
   scheduling messages, so an event a re-import moves is moved *here* --
-  everybody else's copy still says the old time until whoever is organising
+  everybody else's copy still says the old time until whoever is organizing
   sends the update from the event itself.
 - **Subscribed calendars** by URL — a timetable, a rota, a public holiday list.
   Added in Settings › Calendar & contacts, read-only, and shown beside your own
-  with their own colour.
+  with their own color.
 
   **Nothing is stored.** The document is fetched when you open the calendar and
   parsed in the browser; the server keeps no copy, no cache and no schedule,
@@ -608,7 +632,7 @@ nothing for anybody else.
   They cannot be edited or deleted, and that falls out of the design rather
   than being special-cased: the virtual calendar reports no write rights, so
   every control that asks before offering Edit or Delete already declines. The
-  store refuses a synthesised id as well, whatever calls it.
+  store refuses a synthesized id as well, whatever calls it.
 
   A card that records only a day and month — the common case — gets a birthday
   with no age rather than no birthday. And 29 February falls on the 28th in a
@@ -623,16 +647,16 @@ empty space offers a timed or all-day event at that moment, or *Go to day* /
 
 The editor covers title, start and end (all-day or timed, with a time zone),
 calendar, location, meeting link, guests, description, reminders, repeat,
-status (confirmed / tentative / cancelled), show-as (busy / free), visibility
-(default / private / secret), category and colour.
+status (confirmed / tentative / canceled), show-as (busy / free), visibility
+(default / private / secret), category and color.
 
 - **Recurrence** — none, daily, weekly, weekdays, monthly, yearly, or a custom
   builder: interval, by-weekday, by-month-day, and an end by count or by date.
 - **Reminders** — one or more alerts before the start, with a default in settings.
-- **Colour categories**, Outlook-style: named colours managed in Settings ›
+- **Color categories**, Outlook-style: named colors managed in Settings ›
   Calendar, assigned from the editor or the context menu, and stored as
-  JSCalendar `categories` so other clients see them. (The per-event colour
-  picker that predated them is gone; a colour comes from the category, or the
+  JSCalendar `categories` so other clients see them. (The per-event color
+  picker that predated them is gone; a color comes from the category, or the
   calendar.)
 - **Duplicate** an event from the context menu.
 - **Create event…** from a message, in its context menu and its ⋮ menu (and,
@@ -649,7 +673,7 @@ status (confirmed / tentative / cancelled), show-as (busy / free), visibility
 ## Attendees, invitations and free/busy
 
 Invitations go out as iTIP when guests are added, replies come back and are
-applied to the event, and cancelling notifies the guests. Guests are added by
+applied to the event, and canceling notifies the guests. Guests are added by
 name or address with the same autocomplete the composer uses.
 
 Where the server implements `Principal/getAvailability`, the event editor grows
@@ -756,24 +780,24 @@ JMAP Contacts and JSContact.
   afterwards is what the server confirmed rather than what was asked for.
 - **Letter index** down the list, with `#` for everything that does not start
   with a letter.
-- **Search** across name, address, organisation and notes, in one book or all.
+- **Search** across name, address, organization and notes, in one book or all.
 - **vCard import** through `ContactCard/parse` (a file of any number of cards),
   and **export** of one card or the whole book as `.vcf`.
 - **LDIF import**, for address books coming from SOGo, Thunderbird or an LDAP
   directory. Nothing on the server reads LDIF, so the file is read here:
   RFC 2849 for the syntax, [Mozilla's address book schema][ldif-schema] for what
   the attributes mean, which is the one such exports almost always use. Work and
-  home addresses, every phone kind, second email, organisation and units, job
+  home addresses, every phone kind, second email, organization and units, job
   title, nickname, web pages and the custom fields all come across. The import
   control takes either format and decides by what is in the file, not by what it
   is called.
-- **Re-importing updates rather than duplicates.** A vCard is recognised by its
+- **Re-importing updates rather than duplicates.** A vCard is recognized by its
   UID; an LDIF entry, whose schema has none, by its distinguished name. The card
   already here is merged with the file's version -- what the file carries wins,
   what it does not mention is left alone -- so a corrected export can correct
   what the first attempt got wrong. Matching is per address book, which is also
   how two directories that each hold a `cn=John Smith` stay two people. An entry
-  no longer recognisable, because its `dn` moved between exports, is imported
+  no longer recognizable, because its `dn` moved between exports, is imported
   again and counted: *"3 of them look like contacts you already had."*
 
 [ldif-schema]: https://wiki.mozilla.org/MailNews:Mozilla_LDAP_Address_Book_Schema
@@ -898,7 +922,7 @@ individual rights by hand.
 
 Preferences live in a `settings.json` in the account's own JMAP Files, beside
 the signature images. So identity, signatures, locale, date and time formats,
-theme, labels, templates, folder colours, trusted image senders and added shares
+theme, labels, templates, folder colors, trusted image senders and added shares
 are the same wherever you sign in, private windows included — and they are
 backed up with the mail store, because they *are* in the mail store. ihasmail
 still stores nothing of its own.
@@ -921,16 +945,16 @@ not reach another that already has ihasmail open until it signs in again.
 
 | Section | Holds |
 | --- | --- |
-| **General** | Reading pane, mark-as-read delay, auto-advance, conversation view, snippets, avatars; compose format, quoting, signature placement, spell check; time zone, week start, language & region, date format, time format; `mailto:` handler; export / import / reset |
+| **General** | Reading pane, mark-as-read delay, auto-advance, conversation view, snippets, avatars; compose format, quoting, signature placement, spell check, full-screen composer; time zone, week start, language & region, date format, time format; `mailto:` handler; export / import / reset |
 | **Privacy & safety** | Remote images and the senders trusted with them, read receipts asked for and answered; the three warnings and the domains they measure against; undo-send window, attachment reminder, confirm-before-delete |
-| **Appearance** | Theme, accent colour, density, font size, sidebar, swipe actions, interface language |
+| **Appearance** | Theme, accent color, density, font size, sidebar, swipe actions, interface language |
 | **Identities & signatures** | Addresses, names, Reply-To, HTML signatures, the default, and which to hide from the picker |
 | **Filters & rules** | The visual builder and raw Sieve editor |
 | **Out of office** | Vacation response |
-| **Folders** | Create, rename, colour, subscribe |
-| **Labels** | Keyword, display name, colour |
+| **Folders** | Create, rename, color, subscribe |
+| **Labels** | Keyword, display name, color |
 | **Templates** | Named subject + body |
-| **Calendar & contacts** | Colour categories, working hours, default view, default duration, default reminder |
+| **Calendar & contacts** | Color categories, working hours, default view, default duration, default reminder |
 | **Notifications** | In-tab notifications, notify-when-closed (Web Push), sound |
 | **Security & sessions** | Password, two-factor state, app passwords, active webmail sessions |
 | **Keyboard shortcuts** | The full list, grouped |
@@ -940,7 +964,7 @@ not reach another that already has ihasmail open until it signs in again.
 between them is worth stating because two similar words in one nav is how a
 menu becomes something people hunt through. Security & sessions is credentials
 and access: password, two-factor state, app passwords, live sessions. Privacy &
-safety is how the app behaves towards the reader and towards senders: what
+safety is how the app behaves toward the reader and toward senders: what
 loads, what leaks, and what asks before it happens. These had been spread
 through General, which had grown five unrelated headings — remote images filed
 under "Reading", the read-receipt policy under "Composing", the undo-send window
@@ -1003,29 +1027,39 @@ Settings **export** to a JSON file and **import** back, and reset to defaults.
 
 ## Interface language
 
-Ten languages — English and nine translations — chosen in **Appearance →
+Eleven languages — English and ten translations — chosen in **Appearance →
 Language**, and separate from the date-and-time locale above. Wanting German
 dates on an English interface is a real preference and so is the reverse, which
 is why they are two settings and not one.
 
 | | |
 | --- | --- |
-| English | the source language, and what every other catalogue falls back to |
-| Deutsch · Español · Français · Nederlands · Português (Brasil) | Beta |
+| English | the source language, and what every other catalog falls back to |
+| Nederlands | reviewed by a native speaker |
+| Deutsch · Español · Français · Português (Brasil) | Beta |
 | Русский · Українська · 简体中文 · 日本語 | Beta |
+| Türkçe | by a native speaker, Hakan Arslan |
 
-**All nine translations are marked Beta, and the label is not modesty.**
-The catalogues were produced by AI against standard dictionaries and have not
-been read by anybody who speaks the language. That is stated in Settings, next
-to a link for reporting anything that reads wrongly, because the alternative —
+**Eight of the ten translations are marked Beta, and the label is not
+modesty.** The catalogs were produced by AI against standard dictionaries, and
+apart from Dutch and Turkish none has been signed off by anybody who speaks the language. That is
+stated in Settings, next to a link for reporting anything that reads wrongly, because the alternative —
 shipping them quietly — would ask people to trust text nobody has checked. A
 language loses the Beta mark when a speaker has read it and said so, which is a
-deliberate act by a person and not something a percentage earns.
+deliberate act by a person and not something a percentage earns. Dutch was the
+first: Michael ([mbjboon82](https://git.coffeylabs.org/mbjboon82), also
+mbjboon-netizen), a native speaker, read every string, including the permission
+labels, and his corrections shipped in September 2026.
+
+Turkish came the other way, as a contribution: Hakan Arslan ([harslannet](https://github.com/harslannet))
+translated every string and permission label, made with AI and checked by him
+as a native speaker, and sent it in October 2026. It ships without the Beta
+mark.
 
 Two things follow from the design rather than the translation:
 
 - **A missing entry renders its English source.** So deleting a bad line is a
-  valid fix, not a regression, and a catalogue is never in a half-broken state.
+  valid fix, not a regression, and a catalog is never in a half-broken state.
 - **Plurals are asked for, never assumed.** `Intl.PluralRules` decides the form,
   so Russian and Ukrainian get their three (1 письмо, 2–4 письма, 5+ писем) and
   Japanese and Chinese get the one they actually have — with counters doing the
@@ -1037,7 +1071,7 @@ The interface language also feeds the *automatic* date locale, so choosing
 page that is already in the reader's language — and accepting that offer is
 what rewrites the DOM underneath React.
 
-Only languages with a catalogue shipped appear in the picker. A language
+Only languages with a catalog shipped appear in the picker. A language
 offered without strings behind it would leave the page claiming to be in a
 language it is not, which is worse than not offering it: it stops a browser
 offering to translate a page the reader cannot read.
@@ -1061,28 +1095,28 @@ at two.
 | **Ayu** | |
 | **Kanagawa** | Wave, with Lotus as its light half |
 | **Everforest** | The medium-contrast variant of each side |
-| **Primer** | The colours behind GitHub's design system. Named for the system, not for GitHub, which has not endorsed anything here |
+| **Primer** | The colors behind GitHub's design system. Named for the system, not for GitHub, which has not endorsed anything here |
 
 Every one has both halves, so the top-bar toggle only ever changes the side and
-never the colours. Accent colours still sit on top of any of them.
+never the colors. Accent colors still sit on top of any of them.
 
 The ten borrowed palettes are the work of their own projects and are used
-under the MIT licence — see [NOTICE](NOTICE). Only the published colour values
+under the MIT license — see [NOTICE](NOTICE). Only the published color values
 are used, taken from each project's own repository; the values as fetched are
 recorded in `.palette-sources/palettes-upstream.md`.
 
 **The shades between those values are derived, and every one is checked.**
 ihasmail needs about thirty tokens and these projects publish between twelve
 and twenty, so the tiers in between are computed by
-`scripts/build-palettes.py`, which then measures every text colour against the
+`scripts/build-palettes.py`, which then measures every text color against the
 surface it sits on — 4.5:1 for prose, 3:1 for borders and marks — and lifts
-anything that falls short, towards white on a dark ground and towards black on
+anything that falls short, toward white on a dark ground and toward black on
 a light one so the hue survives. The script refuses to write a palette that
 would not pass.
 
 That check is not a formality. **Twenty-one of the twenty-two palette halves
 needed at least one lift**, because these palettes are designed for code
-editors rather than for prose at this size: Dracula's comment grey is 3.03:1 on
+editors rather than for prose at this size: Dracula's comment gray is 3.03:1 on
 its own background, and Rosé Pine's gold is 2.7:1 on Dawn. Shipping them as
 published would have quietly ended the WCAG AA claim two sections down.
 
@@ -1108,8 +1142,10 @@ redirects them to their mail if they type its address in.
 At sign-in the server already asks Stalwart's `GET /api/account` for the
 edition; it now keeps the account's **permissions** from the same answer and
 hands them to the browser with the session. The menu appears for an account
-that can query and read accounts (`sysAccountQuery`, `sysAccountGet`) or
-domains (`sysDomainQuery`, `sysDomainGet`), and each control inside is there only when the matching permission is:
+that can count something the dashboard shows — accounts (`sysAccountQuery`),
+domains (`sysDomainQuery`), the delivery queue (`sysQueuedMessageQuery`) or the
+metric history (`sysMetricQuery` with `sysMetricGet`) — and each section and
+control inside is there only when the matching permission is:
 **New account** with `sysAccountCreate`, editing with `sysAccountUpdate`,
 **Delete** with `sysAccountDestroy`. A system administrator, a tenant
 administrator and a custom helpdesk role each see the same screen shaped to
@@ -1120,6 +1156,46 @@ call through the ordinary `/api/jmap` proxy, authenticated as the signed-in
 account, and Stalwart decides each one — scoping a tenant administrator's
 queries to their own tenant and refusing anything the role does not allow.
 The client's gating only avoids offering what would fail.
+
+## Dashboard
+
+Administration opens on a grid of cards, one for each number the role can read:
+
+| Card | What it counts | Needs |
+|---|---|---|
+| **Users** | user accounts, not groups | `sysAccountQuery` |
+| **Domains** | mail domains | `sysDomainQuery` |
+| **Pending** | messages waiting in the delivery queue | `sysQueuedMessageQuery` |
+| **Server memory** | the latest reading, and when it was taken | `sysMetricQuery`, `sysMetricGet` |
+| **Received** | messages queued for delivery in the last 24 hours | the same |
+| **Sent** | authenticated submissions, bounces and reports queued in the last 24 hours | the same |
+
+Users and Domains open their sections when the role can. The counts are what
+Stalwart answers for the signed-in account, so a **tenant administrator sees
+their tenancy**: its accounts, its domains, and the queued messages that touch
+them. The last three come from Stalwart's metric history, which has no tenant
+in it and which the Tenant Administrator role Stalwart creates does not hold,
+so a tenant's dashboard is Users, Domains and Pending. A helpdesk role that can
+read accounts and domains sees those two cards.
+
+The history is an Enterprise feature that has to be switched on. A server that
+refuses it — Community does — leaves those three cards off rather than showing
+them broken, and one that records nothing says *Not recorded on this server*
+rather than showing a day of zeroes. Received and sent add up the same metric
+names Stalwart's own dashboard uses. The columns follow the number of cards,
+so rows come out even: six are three over three, and fall to two and then one
+as the space narrows. **Refresh** reads everything again; nothing is polled.
+
+Below the cards, a line says where the rest is: detailed metrics, the delivery
+queue, logs and server settings are in Stalwart's own administration, and it
+links there. The address is found rather than configured: the public host
+Stalwart advertises in its own session — the one people reach it at, even when
+ihasmail talks to it on a private address — and the prefix its web interface is
+installed under, read from its `x:Application` objects (`/admin` unless it was
+moved). A server whose web interface is disabled or moved away gets no link, and
+an administrator who may not read applications gets Stalwart's default `/admin`.
+`STALWART_ADMIN_URL`, or a servers file entry's `adminUrl`, overrides it for an
+administration that lives somewhere else.
 
 ## Accounts
 
@@ -1143,6 +1219,120 @@ accounts could otherwise reset the password of one that can do more and sign
 in as it. ihasmail shows any account that outranks the viewer read-only, and
 counts a role it cannot read as outranking rather than not. Nobody can change
 their own role or delete the account they are signed in with.
+
+## Groups
+
+A group is a shared address and mailbox, and the people who share it. To
+Stalwart it is an account whose type is Group, so it takes the same
+permissions as Accounts (`sysAccountQuery`, `sysAccountGet`) and sits beside
+it in the menu.
+
+- **List and search** by name or address, with each group's member count.
+- **Create** a group on a domain, with a display name, a role and a storage
+  limit; **edit** those and its other addresses, which save together.
+- **Members** are added by searching for a person and removed one at a time,
+  and each change applies straight away. Stalwart keeps a membership on the
+  member rather than the group, so every change is a one-line update to that
+  person's account that leaves their other groups alone. Nobody can add or
+  remove themselves.
+- **What a group gives its members** is what has been shared with it — its
+  mailbox, a calendar — not its permissions: a person's permissions come from
+  their own role. The group's own role says what the group may do, and only
+  roles whose permissions the viewer holds are offered, as for accounts.
+- **Delete** asks for the address to be typed. Stalwart keeps anything that
+  something else still names, and every member's account names its groups, so
+  deleting takes the members out first and then deletes the group — the same
+  order a domain's keys go before the domain. A role that cannot change the
+  members' accounts is not offered a delete it could only half finish.
+
+Groups do not contain groups; Stalwart has no nesting.
+
+## Mailing lists
+
+A mailing list is an address that passes mail on to everyone on it, on this
+server or anywhere else. For a role with `sysMailingListQuery` and
+`sysMailingListGet`, under Directory after Groups:
+
+- **List and search** by name or address, with each list's recipient count.
+- **Create** a list on a domain; **edit** its display name, recipients and
+  other addresses, which save together.
+- **Recipients** can be pasted several at a time — a column from a
+  spreadsheet, a line of addresses separated by commas, `Name <address>` —
+  and anything with an @ that is not an address stays in the box with a note
+  rather than being dropped. Past a dozen, a filter narrows them. Saving sends
+  only the addresses added and removed, so a recipient someone else added while
+  the panel was open is not lost.
+- **Delete** asks for the address to be typed. The recipients' own mail is not
+  touched.
+
+That is all a list is in Stalwart: there are no owners, moderators or posting
+rules to set.
+
+## Roles
+
+A role is a named set of permissions that accounts, groups and tenants are
+given. For a role with `sysRoleQuery` and `sysRoleGet`, under Access:
+
+- **List and search** every role, with the number of permissions each grants
+  once the roles it builds on are followed, what it builds on, and a note on the
+  ones Stalwart hands out by default.
+- **Builds on** other roles, and gets everything they grant. A role cannot build
+  on itself or on one already built on it.
+- **Permissions** come from Stalwart's own list — every permission the server
+  knows, grouped under its headings, searchable, and filterable to the ones
+  granted or set on this role. Each is not set, allowed or denied; one it
+  inherits says which role it comes from. A denial wins over anything allowed,
+  here or on any role underneath, as it does in Stalwart. Only permissions the
+  viewer holds can be allowed: Stalwart refuses the rest.
+- **Saving** sends only the permissions and roles that changed.
+- **A role that carries permissions the viewer lacks opens read-only**, with no
+  delete — Stalwart checks a grant but not a delete, so this stands in for it.
+- **A default role** — one Stalwart gives new users, groups, tenant
+  administrators or administrators — says so before anything is changed, and
+  cannot be deleted from here. A role still in use is kept by the server, and
+  the refusal names what uses it.
+
+The list of permissions is Stalwart's schema (`GET /api/schema`), fetched by
+ihasmail's server as the signed-in account and cut down to names and labels.
+Its labels are English only, so ihasmail ships its own translation of every one
+of them, loaded only when the Roles screen opens; a permission added by a later
+Stalwart shows the server's English until it is translated.
+
+## Tenants
+
+A tenant is a separate organization on the same server — its own people,
+domains and limits, and an administrator who manages only what is in it. It is
+a Stalwart Enterprise feature. On a server that does not report Enterprise — or
+reports no edition at all — the page is only the notice *Tenants are a Stalwart
+Enterprise feature.*: no list, no search, nothing to create. On Enterprise the
+notice is left out, unless `SHOW_ENTERPRISE_NOTICES=1` asks for it above the
+list, as the public demo does. On Enterprise, for a role with `sysTenantQuery`
+and `sysTenantGet`, under Access:
+
+- **List and search** tenants, with each one's storage and account limit.
+- **Create and edit** a tenant's name, logo (an https address, drawn through the
+  image proxy, or an image data URL), role and limits — accounts, groups,
+  mailing lists, domains, roles, DKIM keys and storage. An empty limit is no
+  limit, and a limit ihasmail does not offer keeps whatever it had.
+- **The tenant's role** is the most anyone inside it can be allowed: their own
+  roles are cut down to it.
+- **What it holds** is counted, each against its limit. Stalwart keeps no list
+  on the tenant; each account, group, domain, list, role and DKIM key names its
+  tenant, so the counts are queries for those. A domain created in a tenant
+  brings its keys with it.
+- **Domains** are added to a tenant, or taken out, from its panel. Only a domain
+  in no tenant can be added, and the accounts already on it stay where they
+  are. A domain comes out only once none of the tenant's accounts are on it —
+  Stalwart would allow it, and strand them.
+- **An account's tenant** is chosen on the account's own panel, which is how a
+  tenant gets its first administrator: an Administrator inside a tenant
+  administers that tenant. Stalwart puts something in a tenant only on a domain
+  in that tenant, so the choice is between no tenant and the domain's own, and
+  a new account starts in its domain's tenant.
+- **Delete** is offered once the tenant holds nothing.
+
+Only an administrator outside every tenant can put anything into one; Stalwart
+refuses anyone else, and inside a tenant it scopes every list to that tenant.
 
 ## Domains
 
@@ -1180,7 +1370,7 @@ one question the sign-in page already asks about where it is being used.
 It is enforced the same way as the switch below: an untrusted session is sent
 no permissions, and the JMAP proxy refuses registry methods beyond the account's
 own. The menu still shows **Administration** to an administrator in that
-session, greyed out, with the reason and what to do about it — signing in again
+session, grayed out, with the reason and what to do about it — signing in again
 with the box ticked — rather than losing the entry without a word. All the
 server tells that session is that the account administers, never what it may do.
 
@@ -1202,9 +1392,9 @@ session information already kept for thirty minutes — so a role granted or
 taken away shows in the menu at the next sign-in or within half an hour, and in
 the meantime Stalwart refuses what is no longer allowed.
 
-Accounts and domains are the first two sections. Groups, mailing lists, roles
-and tenants are Stalwart capabilities the same screen is laid out to take;
-reporting, queues, logs and server settings are deliberately out of scope.
+The dashboard, accounts, groups, mailing lists, tenants, roles and domains are
+the sections so far. Beyond the dashboard's counts, managing queues, logs and
+server settings is deliberately out of scope.
 
 ---
 
@@ -1258,8 +1448,13 @@ reporting, queues, logs and server settings are deliberately out of scope.
 # Platform
 
 - **Installable PWA** with a service worker: the app shell is cached for
-  installability and fast loads, API requests never are, and navigations are
-  network-first with the shell as fallback.
+  installability and fast loads, API requests never are. An app route is
+  answered from the kept shell at once while a fresh copy is fetched behind it;
+  a shell a build behind is caught by the version check at start and reloaded.
+  After a new version is seen, the rest of its code (composer, settings,
+  viewers) is fetched in the background, so opening them later does not wait on
+  the server; language catalogs are cached when first used, and nothing is
+  fetched ahead when the browser is set to save data.
 - **Manifest shortcuts** for Compose, Calendar and Contacts.
 - **One window, not one per launch.** A `mailto:` link, a shortcut or a
   notification opened while ihasmail is already running arrives in the copy
@@ -1307,7 +1502,7 @@ reporting, queues, logs and server settings are deliberately out of scope.
   worker genuinely cannot reach is anything a *tab* holds in memory — and the
   API asks for none of it.
 
-  What it cannot reach is a catalogue. The worker is plain JavaScript outside
+  What it cannot reach is a catalog. The worker is plain JavaScript outside
   the bundle, with no i18n and no idea which mailbox is the archive, so the app
   writes both down for it whenever the language, the account or the folder list
   changes. Where there is no such note — between installing a new worker and
@@ -1389,15 +1584,23 @@ costs something to get wrong is the one that assumes the machine is yours.
 | --- | --- | --- |
 | Stays signed in | until the browser closes | up to 30 days (`SESSION_REMEMBER_TTL`) |
 | Idle sign-out | after 5 minutes | none |
-| Kept on the computer | nothing | settings cache, recent addresses, username |
+| Kept on the computer | nothing | settings cache, recent addresses, username, and the folder list with the first page of recently read folders (list rows only: sender, subject, preview, flags — no message bodies) |
 | Background notifications | refused | available |
 | Administration | unavailable | available, if the role allows it |
 
 Local storage is gated on that answer for **reads** as well as writes — a
-machine trusted once still has residue, and honouring it would let a previous
+machine trusted once still has residue, and honoring it would let a previous
 session's data surface in a later untrusted one. Signing out clears the settings
-cache and recent addresses and tears down the push subscription, whichever
-answer was given.
+cache, recent addresses and kept folder list, and tears down the push
+subscription, whichever answer was given.
+
+What a ticked device keeps is what makes it **start quickly on a distant
+link**: once the server has confirmed the session, the folders and the inbox
+paint from the kept copy straight away, and the request for the open folder
+goes out without waiting on the folder list first. The server's answers
+replace the copy a round trip later. **Nothing kept is shown before the session
+is confirmed** — until then the app shows a spinner, so a session that has
+ended goes from the spinner to the sign-in form and never past a mailbox.
 
 The idle timer exists because the alternative does not work: `beforeunload` text
 was removed from browsers years ago, and **no event fires at all** for walking
@@ -1458,10 +1661,10 @@ This is S/MIME only, and it stops at reading: nothing here signs, encrypts or
 decrypts anything.
 
 **What it checks.** For a `multipart/signed` message carrying a PKCS#7
-signature, the exact bytes of the signed part — headers included, canonicalised
+signature, the exact bytes of the signed part — headers included, canonicalized
 to CRLF — are hashed and compared against the `messageDigest` the signature
 covers, and the signature over the signed attributes is verified with WebCrypto
-against the certificate travelling inside the message. RSA (PKCS#1 v1.5) and
+against the certificate traveling inside the message. RSA (PKCS#1 v1.5) and
 ECDSA over P-256, P-384 and P-521 are supported, with SHA-256, SHA-384 or
 SHA-512.
 
@@ -1478,12 +1681,12 @@ authority:
 
 | what happened | what you see |
 |---|---|
-| first signed message from this address | *"Signed by X, seen here for the first time"* — grey, and deliberately not congratulatory |
+| first signed message from this address | *"Signed by X, seen here for the first time"* — gray, and deliberately not congratulatory |
 | same certificate as before | *"the same signer as before"* — the only case that gets a tick |
 | **different certificate than before** | **loud**: both names, and told to check by some other route |
 | valid signature, certificate for a different address | **loud**: the signature is not for this sender |
 | body changed after signing | **loud**: the signature does not check out |
-| signed, but uncheckable | grey, and careful to say *could not check* rather than *did not check out* |
+| signed, but uncheckable | gray, and careful to say *could not check* rather than *did not check out* |
 
 The pins live in the account's settings file rather than in the browser, so the
 same correspondent is not greeted as new on every device — which is what trains
@@ -1533,7 +1736,7 @@ docker run --read-only --tmpfs /tmp -e IMMUTABLE=1 -e SESSION_FILE= ...
 ```
 
 `IMMUTABLE=1` is an **assertion the server checks at startup**, not a switch
-that changes behaviour. It refuses to boot if `SESSION_FILE` is still set, or if
+that changes behavior. It refuses to boot if `SESSION_FILE` is still set, or if
 the filesystem it is installed on turns out to be writable after all. Without
 it, the same misconfiguration is silent — sessions are held in memory and
 persisting them is best-effort, so a read-only `/data` costs one warning at the
@@ -1562,6 +1765,8 @@ wizard, because either would be state.
 | Variable | Default | Does |
 | --- | --- | --- |
 | `STALWART_URL` | — | Where Stalwart is; the JMAP session is discovered at `/.well-known/jmap` |
+| `SHOW_ENTERPRISE_NOTICES` | `0` | Say an Enterprise-only section (Tenants) is Enterprise-only even when the server is Enterprise. For a demo that reports Enterprise to show those sections; a real installation leaves it off |
+| `STALWART_ADMIN_URL` | found | Where a browser opens Stalwart's own administration, linked from the Administration dashboard. Unset, it is found: the host Stalwart advertises and its web interface's prefix. Set it only when the administration lives somewhere else |
 | `APP_SECRET` | — | Key material for sealing sessions. **Required in production** — the server refuses to start without it |
 | `HOST` / `PORT` | `0.0.0.0` / `8080` | Listen address |
 | `BASE_PATH` | — (the domain root) | Subpath to serve from, e.g. `/mail`. Must be set for the **build** as well as the run — see below |
@@ -1662,11 +1867,15 @@ moves an occurrence renumbering the ids around it. Two switches:
 tested.
 
 Administration works against it too, with a directory of about thirty accounts,
-three domains with their DKIM keys and zone files, behind the same permission
-names Stalwart uses. `MOCK_ROLE` decides who the
-demo user is: `admin` (the default), `tenant-admin`, `helpdesk` — a custom role
-that may view and edit accounts but not create or delete them — or `user`, who
-is not offered the menu at all.
+three domains with their DKIM keys and zone files, nine queued messages and
+thirty hours of metric history ending in the current hour, behind the same
+permission names Stalwart uses. `MOCK_ROLE` decides who the
+demo user is: `admin` (the default), `tenant-admin` (the queue but not the
+history), `helpdesk` — a custom role that may view and edit accounts but not
+create or delete them, and read domains — or `user`, who is not offered the
+menu at all. `MOCK_METRICS=off` refuses the history the way a Community server
+does, and `MOCK_EDITION=enterprise` reports Enterprise so Tenants can be
+worked on (the default, `oss`, shows only its notice). Two mailing lists round it out.
 
 ---
 
@@ -1674,7 +1883,7 @@ is not offered the menu at all.
 
 The full list with reasons is [ROADMAP.md](ROADMAP.md). In short: no snooze
 (nothing in JMAP or Stalwart supports it, and ihasmail holds no password to act
-on a mailbox while you are away), no language yet checked by a native speaker,
+on a mailbox while you are away), only one language (Dutch) checked by a native speaker,
 no two-factor sign-in without an app password, no sharing of mail folders (the
 server stores the share and never delivers it), no public links (JMAP shares
 with accounts on the same server, and ihasmail has no storage of its own to

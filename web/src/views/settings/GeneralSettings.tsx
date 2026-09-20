@@ -1,4 +1,5 @@
 import { useSettings } from "@/store/settings";
+import { useAppName } from "@/lib/brand";
 import { Switch } from "@/ui/misc";
 import { browserTimeZone, listTimeZones } from "@/lib/dates";
 import { toast } from "@/ui/toast";
@@ -25,6 +26,7 @@ import {
   type DateFormat,
 } from "@/lib/datetime";
 import { isEnforced } from "@/lib/settingsPolicy";
+import { downloadFile } from "@/lib/download";
 
 /** Illustrative instant used for the format previews: 22 Nov 2025, 18:23. */
 const SAMPLE = new Date(2025, 10, 22, 18, 23);
@@ -182,6 +184,7 @@ export function GeneralSettings() {
       <Switch locked={isEnforced("includeQuote")} checked={s.includeQuote} onChange={(v) => update({ includeQuote: v })} label={t("Quote original message in replies")} />
       <Switch locked={isEnforced("signatureAboveQuote")} checked={s.signatureAboveQuote} onChange={(v) => update({ signatureAboveQuote: v })} label={t("Place signature above quoted text")} />
       <Switch locked={isEnforced("spellcheck")} checked={s.spellcheck} onChange={(v) => update({ spellcheck: v })} label={t("Spell check while typing")} />
+      <Switch locked={isEnforced("composeMaximized")} checked={s.composeMaximized} onChange={(v) => update({ composeMaximized: v })} label={t("Open the composer full screen")} />
 
       <h2>{t("Locale")}</h2>
       <div className="field-row">
@@ -236,7 +239,7 @@ export function GeneralSettings() {
 
       <h2>{t("Backup")}</h2>
       <div className="row wrap">
-        <button className="btn" onClick={() => { const blob = new Blob([exportJson()], { type: "application/json" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "ihasmail-settings.json"; a.click(); }}>{t("Export settings")}</button>
+        <button className="btn" onClick={() => downloadFile(exportJson(), "application/json", "ihasmail-settings.json")}>{t("Export settings")}</button>
         <label className="btn">
           {t("Import settings")}
           <input type="file" accept="application/json" hidden onChange={async (e) => { const f = e.target.files?.[0]; if (!f) return; const ok = importJson(await f.text()); toast[ok ? "success" : "error"](ok ? t("Settings imported") : t("Invalid settings file")); e.target.value = ""; }} />
@@ -253,6 +256,7 @@ export function GeneralSettings() {
  * it can and points at the browser's own settings for the rest.
  */
 function MailHandlerSettings() {
+  const appName = useAppName();
   const support = mailtoHandlerSupport();
   const [requested, setRequested] = useState(mailtoHandlerRequested);
 
@@ -260,7 +264,7 @@ function MailHandlerSettings() {
     try {
       registerMailtoHandler();
       setRequested(true);
-      toast.success(t("Your browser will ask whether to open mail links in ihasmail"));
+      toast.success(t("Your browser will ask whether to open mail links in {app}", { app: appName }));
     } catch (err) {
       toast.error(t("Your browser refused the request: {error}", { error: (err as Error).message }));
     }
@@ -273,7 +277,7 @@ function MailHandlerSettings() {
   };
 
   if (support === "unsupported") {
-    return <p className="hint">{tNode("This browser cannot register apps for {scheme} links. Safari, in particular, has no such API — you can still make ihasmail the default from your operating system if you install it as an app.", { scheme: <code>mailto:</code> })}</p>;
+    return <p className="hint">{tNode("This browser cannot register apps for {scheme} links. Safari, in particular, has no such API — you can still make {app} the default from your operating system if you install it as an app.", { scheme: <code>mailto:</code> }, { app: appName })}</p>;
   }
   if (support === "insecure") {
     return <p className="hint">{tNode("Registering for {scheme} links requires a secure (HTTPS) connection.", { scheme: <code>mailto:</code> })}</p>;
@@ -282,7 +286,7 @@ function MailHandlerSettings() {
   return (
     <>
       <p className="hint">
-        {tNode("Open {scheme} links — in web pages, documents and other apps — in ihasmail instead of a desktop mail client. Your browser will ask you to confirm, and you can change it later in its own settings (Chrome: Settings › Privacy and security › Site settings › Protocol handlers; Firefox: Settings › General › Applications).", { scheme: <code>mailto:</code> })}
+        {tNode("Open {scheme} links — in web pages, documents and other apps — in {app} instead of a desktop mail client. Your browser will ask you to confirm, and you can change it later in its own settings (Chrome: Settings › Privacy and security › Site settings › Protocol handlers; Firefox: Settings › General › Applications).", { scheme: <code>mailto:</code> }, { app: appName })}
       </p>
       <div className="row wrap">
         <button className="btn btn-primary" onClick={ask}>{requested ? "Ask again" : "Make ihasmail the default mail app"}</button>
@@ -292,7 +296,7 @@ function MailHandlerSettings() {
       {!isInstalledApp() && (
         <p className="hint mt-8">
           
-          {t("For a system-wide default, install ihasmail as an app first (in Chrome: the install icon in the address bar). Your operating system can then offer ihasmail directly wherever it asks which mail app to use.")}
+          {t("For a system-wide default, install {app} as an app first (in Chrome: the install icon in the address bar). Your operating system can then offer {app} directly wherever it asks which mail app to use.", { app: appName })}
         </p>
       )}
     </>

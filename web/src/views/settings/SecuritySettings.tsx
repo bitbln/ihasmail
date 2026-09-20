@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useAppName } from "@/lib/brand";
 import { Copy, KeyRound, ShieldCheck, Smartphone } from "lucide-react";
 import { apiFetch, ApiError } from "@/jmap/client";
 import { useSession } from "@/store/session";
@@ -177,6 +178,7 @@ function PasswordForm({ otpEnabled, onChanged }: { otpEnabled: boolean; onChange
  * stay — whoever is already enrolled needs a way back.
  */
 function TwoFactorOff({ reload }: { reload: () => Promise<void> }) {
+  const appName = useAppName();
   const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -200,7 +202,7 @@ function TwoFactorOff({ reload }: { reload: () => Promise<void> }) {
     <div>
       <p className="hint" style={{ marginBottom: 12 }}>
         
-        {t("This account has two-factor authentication on. ihasmail can't sign you in with a code yet, so signing in on another device needs an app password — or you can turn two-factor authentication off here.")}
+        {t("This account has two-factor authentication on. {app} can't sign you in with a code yet, so signing in on another device needs an app password — or you can turn two-factor authentication off here.", { app: appName })}
       </p>
       <div className="row" style={{ alignItems: "center", gap: 10 }}>
         <ShieldCheck size={18} />
@@ -231,6 +233,7 @@ function TwoFactorOff({ reload }: { reload: () => Promise<void> }) {
 
 function AppPasswords({ state, reload }: { state: SecurityState | null; reload: () => Promise<void> }) {
   const [name, setName] = useState("");
+  const [current, setCurrent] = useState("");
   const [busy, setBusy] = useState(false);
   const [issued, setIssued] = useState<{ description: string; secret: string } | null>(null);
 
@@ -242,10 +245,11 @@ function AppPasswords({ state, reload }: { state: SecurityState | null; reload: 
     try {
       const res = await apiFetch<{ id: string; secret: string }>("/api/account/app-passwords", {
         method: "POST",
-        body: JSON.stringify({ description: name }),
+        body: JSON.stringify({ description: name, current }),
       });
       setIssued({ description: name, secret: res.secret });
       setName("");
+      setCurrent("");
       await reload();
     } catch (err) {
       toast.error((err as Error).message);
@@ -296,7 +300,12 @@ function AppPasswords({ state, reload }: { state: SecurityState | null; reload: 
           <label htmlFor="ap-name">{t("New app password for")}</label>
           <input id="ap-name" value={name} onChange={(e) => setName(e.target.value)} placeholder={t("Thunderbird on my laptop")} required />
         </div>
-        <button className="btn" disabled={busy || !name.trim()}>{busy ? "Creating…" : "Create"}</button>
+        {/* A credential that outlives this session: the server asks for the password first. */}
+        <div className="field" style={{ marginBottom: 0, minWidth: 200 }}>
+          <label htmlFor="ap-current">{t("Current password")}</label>
+          <input id="ap-current" type="password" autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} required />
+        </div>
+        <button className="btn" disabled={busy || !name.trim() || !current}>{busy ? "Creating…" : "Create"}</button>
       </form>
 
       <Dialog open={Boolean(issued)} onClose={() => setIssued(null)} title={t("Your new app password")} size="sm"

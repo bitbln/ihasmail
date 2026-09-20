@@ -18,17 +18,168 @@ const VERSION = "ihasmail-v2";
  * eventually would.
  */
 const BASE = new URL("./", self.location).pathname.replace(/\/$/, "");
-const SHELL = [`${BASE}/`, `${BASE}/manifest.webmanifest`, `${BASE}/img/logo.png`, `${BASE}/img/icon-192.png`, `${BASE}/favicon.ico`];
+const SHELL = [`${BASE}/manifest.webmanifest`, `${BASE}/img/logo.png`, `${BASE}/img/icon-192.png`, `${BASE}/favicon.ico`];
+
+/*
+ * Only the app page may be kept as the app page.
+ *
+ * The mount's root is not always the app: demo.ihasmail.com puts its landing
+ * page there, and a front door of any kind can. The worker used to cache
+ * whatever `/` returned at install and whatever HTML a navigation returned,
+ * and since app routes are answered from that copy first, a demo visitor who
+ * came back got the landing page on every route, for good. The app page is
+ * recognised by the asset list the build writes into it.
+ */
+const APP_PAGE_MARKER = 'id="ihasmail-assets"';
+const isAppPage = (html) => typeof html === "string" && html.includes(APP_PAGE_MARKER);
+
+/*
+ * The routes the app itself owns (App.tsx). Only these are answered from the
+ * kept page; anything else under the mount -- the root, a landing or farewell
+ * page in front of the app, a file -- goes to the network as it always did.
+ */
+const APP_ROUTE = /^\/(mail|search|contacts|calendar|files|settings|admin|login)(\/|$)/;
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil(
+    caches.open(VERSION)
+      .then((c) => c.addAll(SHELL))
+      .then(() => fetch(`${BASE}/mail`, { credentials: "same-origin" }).then((res) => (res.ok ? refreshShell(res) : undefined)).catch(() => {}))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k)))).then(() => self.clients.claim())
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k))))
+      .then(() => dropForeignShell())
+      .then(() => tidy())
+      .catch(() => {})
+      .then(() => self.clients.claim())
   );
 });
+
+/*
+ * Keeping the cache to what the current build uses.
+ *
+ * Build assets are cached on first use and their names change with every
+ * build, and nothing used to take them out again: every deploy's chunks stayed
+ * in the browser for good. Worse, whatever the server answered was kept -- a
+ * 404 for a chunk asked for while a deploy was changing over became that
+ * chunk, from then on, in that browser.
+ *
+ * The rule now: only a successful response is cached, and whenever the app
+ * page changes, the assets it no longer names are dropped. A lazily loaded
+ * chunk the page does not name is dropped too, and fetched again the next time
+ * it is wanted -- a hash that did not change is still on the server.
+ *
+ * The cache name stays as it is. The same cache carries what the worker leaves
+ * for a tab to collect -- a push verification, a share, the facts it notifies
+ * from -- and a new name would throw those away along with the rubbish.
+ */
+const ASSETS = `${BASE}/assets/`;
+const SHELL_KEY = `${BASE}/`;
+
+function assetsNamedIn(html) {
+  const out = new Set();
+  for (const m of html.matchAll(/["']([^"']*\/assets\/[^"']+)["']/g)) {
+    try {
+      out.add(new URL(m[1], self.location).pathname);
+    } catch {
+      /* not a URL */
+    }
+  }
+  return out;
+}
+
+/**
+ * Drop failed responses, and assets the cached app page does not name. `also`
+ * is a page whose assets are kept as well: the one just replaced, which a tab
+ * opened from the kept copy may still be running.
+ */
+async function tidy(also = "") {
+  const cache = await caches.open(VERSION);
+  const shell = await cache.match(SHELL_KEY);
+  // Without a page to go by, which assets are current is unknown; keep them.
+  const keep = shell ? assetsNamedIn(await shell.text()) : null;
+  if (keep) for (const path of assetsNamedIn(also)) keep.add(path);
+  for (const req of await cache.keys()) {
+    const path = new URL(req.url).pathname;
+    if (path.startsWith(ASSETS)) {
+      if (keep && !keep.has(path)) {
+        await cache.delete(req);
+        continue;
+      }
+    }
+    const res = await cache.match(req);
+    if (res && !res.ok) await cache.delete(req);
+  }
+}
+
+/** A kept page that is not the app page -- left by an earlier worker -- is thrown away. */
+async function dropForeignShell() {
+  const cache = await caches.open(VERSION);
+  const kept = await cache.match(SHELL_KEY);
+  if (kept && !isAppPage(await kept.text())) await cache.delete(SHELL_KEY);
+}
+
+/** Keep the offline copy of the app page current, tidy when it changes, and fill in what it lists. */
+async function refreshShell(res) {
+  const html = await res.text();
+  if (!isAppPage(html)) return;
+  const cache = await caches.open(VERSION);
+  const prev = await cache.match(SHELL_KEY);
+  const prevHtml = prev ? await prev.text() : "";
+  if (prevHtml !== html) {
+    await cache.put(SHELL_KEY, new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } }));
+    await tidy(prevHtml);
+  }
+  await precache(html);
+}
+
+/*
+ * Fetching the rest of the build before it is asked for.
+ *
+ * The app page lists every file of its build (see the asset-list plugin in
+ * vite.config.ts). Without this, the first time after a deploy that a reader
+ * opened the composer, settings or a viewer, it waited on the server for the
+ * code -- on a distant link, a visible pause. Now those files are fetched
+ * quietly once a page names them, a few at a time, and only those not held
+ * already; a load cut short is carried on at the next navigation, which calls
+ * this again. Language catalogs are left to be cached when used, and nothing
+ * is fetched ahead when the reader has asked the browser to save data.
+ */
+const PRECACHE_PARALLEL = 3;
+
+function precacheList(html) {
+  const m = html.match(/<script type="application\/json" id="ihasmail-assets">([^<]*)<\/script>/);
+  if (!m) return [];
+  try {
+    const list = JSON.parse(m[1]).precache;
+    return Array.isArray(list) ? list.filter((p) => typeof p === "string" && p.startsWith(ASSETS)) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function precache(html) {
+  if (self.navigator.connection && self.navigator.connection.saveData) return;
+  const cache = await caches.open(VERSION);
+  const wanted = [];
+  for (const path of precacheList(html)) if (!(await cache.match(path))) wanted.push(path);
+  const next = async () => {
+    for (let path = wanted.shift(); path; path = wanted.shift()) {
+      try {
+        const res = await fetch(path, { credentials: "same-origin" });
+        if (res.ok) await cache.put(path, res);
+      } catch {
+        /* offline, or a deploy changing over; the next navigation tries again */
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: PRECACHE_PARALLEL }, next));
+}
 
 /*
  * Where a share from the operating system is left for a tab to collect.
@@ -103,21 +254,52 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith(`${BASE}/api/`)) return;
 
-  // Hashed build assets: cache-first.
-  if (url.pathname.startsWith(`${BASE}/assets/`)) {
+  // Hashed build assets: cache-first, and only what actually arrived.
+  if (url.pathname.startsWith(ASSETS)) {
     event.respondWith(
       caches.match(req).then((hit) => hit || fetch(req).then((res) => {
-        const copy = res.clone();
-        caches.open(VERSION).then((c) => c.put(req, copy));
+        if (res.ok && res.type === "basic") {
+          const copy = res.clone();
+          event.waitUntil(caches.open(VERSION).then((c) => c.put(req, copy)).catch(() => {}));
+        }
         return res;
       }))
     );
     return;
   }
 
-  // Navigations & everything else: network-first, fall back to cached shell.
+  /*
+   * Navigations: the kept app page at once, and the network's behind it.
+   *
+   * Every route in the app is the same page, and waiting on the server for it
+   * cost a full round trip before anything could start -- the longest single
+   * wait on a distant link. So a route is answered from the kept copy when
+   * there is one, and the fresh page is fetched alongside to replace it for
+   * next time. A page that is a build behind is caught the way it always was:
+   * the version check reloads it (lib/sw/staleBuild.ts), and the assets it
+   * names are kept for one more build so it can run until then.
+   *
+   * Only the app's own routes (APP_ROUTE). The root, a page in front of the
+   * app, and a file opened in a tab of its own go to the network as before. So
+   * does the first visit, which has no copy yet.
+   */
   if (req.mode === "navigate") {
-    event.respondWith(fetch(req).catch(() => caches.match(`${BASE}/`)));
+    const network = fetch(req).then((res) => {
+      // Every route is the same app page; a fresh one replaces the offline copy.
+      if (res.ok && (res.headers.get("content-type") || "").startsWith("text/html")) {
+        event.waitUntil(refreshShell(res.clone()).catch(() => {}));
+      }
+      return res;
+    });
+    const appRoute = APP_ROUTE.test(url.pathname.slice(BASE.length));
+    event.respondWith((async () => {
+      const kept = appRoute ? await caches.match(SHELL_KEY) : undefined;
+      if (kept) {
+        event.waitUntil(network.catch(() => {}));
+        return kept;
+      }
+      return network.catch(() => caches.match(SHELL_KEY));
+    })());
     return;
   }
   event.respondWith(fetch(req).catch(() => caches.match(req)));
@@ -272,6 +454,14 @@ self.addEventListener("push", (event) => {
 
   const emails = (data && data["@type"] === "EmailPush" && Array.isArray(data.emails)) ? data.emails : [];
   event.waitUntil((async () => {
+    /*
+     * Someone reading the app already knows. A focused, visible window of this
+     * app gets its new mail from its own event stream, so a notification on
+     * top of it is a second telling of the same thing (#375). Chrome does not
+     * require one while the site is in the foreground.
+     */
+    const windows = await self.clients.matchAll({ type: "window" });
+    if (windows.some((w) => w.focused && w.visibilityState === "visible")) return;
     const facts = await readFacts();
     const strings = facts?.strings ?? { newMail: "New mail", newMessage: "New message", noSubject: "(no subject)" };
     /*
@@ -287,8 +477,10 @@ self.addEventListener("push", (event) => {
     if ("setAppBadge" in self.navigator) await self.navigator.setAppBadge().catch(() => {});
 
     if (!emails.length) {
-      // A StateChange, or a payload too large to carry the message. Say
-      // something true rather than inventing a sender.
+      // A delivery from a server that sends StateChange rather than EmailPush
+      // -- the subscription asks for `EmailDelivery` only, so it is new mail --
+      // or a payload too large to carry the message. Say something true
+      // rather than inventing a sender.
       await self.registration.showNotification(strings.newMail, {
         icon: `${BASE}/img/icon-192.png`, badge: `${BASE}/img/favicon-64.png`, tag: "ihasmail-mail", data: { url: `${BASE}/mail` },
       });
@@ -308,7 +500,8 @@ self.addEventListener("push", (event) => {
         // be drawn.
         actions: email.id ? actionsFor(facts) : [],
         data: {
-          url: email.id ? `${BASE}/mail/inbox/${email.id}` : `${BASE}/mail`,
+          // The route names a conversation, and `m` the message in it.
+          url: email.id && email.threadId ? `${BASE}/mail/inbox/${email.threadId}?m=${encodeURIComponent(email.id)}` : `${BASE}/mail`,
           id: email.id || null,
           title,
           accountId: facts?.accountId ?? null,

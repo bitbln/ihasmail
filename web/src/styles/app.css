@@ -151,15 +151,15 @@
 
  *
 
- * Every colour is from the palette's own project (all MIT); the published
+ * Every color is from the palette's own project (all MIT); the published
 
  * values are recorded in .palette-sources/palettes-upstream.md. The tiers
 
- * between them are derived, and every text colour is checked against the
+ * between them are derived, and every text color is checked against the
 
  * surface it sits on: 4.5:1 for prose, 3:1 for borders and marks. Several
 
- * of these palettes do not meet that as published -- Dracula's comment grey
+ * of these palettes do not meet that as published -- Dracula's comment gray
 
  * is about 3.0:1 on its own background -- so those tiers are lifted, which
 
@@ -1098,7 +1098,7 @@ img { max-width: 100%; }
 .menu-item:hover, .menu-item.active { background: var(--bg-hover); }
 .menu-item:disabled { opacity: .5; cursor: default; }
 /* A menu entry that is a link still looks like a menu entry. The global rule
-   for `a` would otherwise colour and underline the one item that leaves the
+   for `a` would otherwise color and underline the one item that leaves the
    app, which reads as a mistake rather than a distinction. */
 a.menu-item { text-decoration: none; color: var(--fg); cursor: pointer; }
 a.menu-item:hover { color: var(--fg); }
@@ -1261,7 +1261,7 @@ a.menu-item:hover { color: var(--fg); }
 .topbar-actions { display: flex; align-items: center; gap: 4px; }
 /* Live-updates indicator. Three states, and a raised bead rather than a flat
    speck: at 8px flat it was invisible against either theme. The gloss is a
-   highlight over a solid colour rather than a colour-mix, so it needs no
+   highlight over a solid color rather than a color-mix, so it needs no
    per-theme variant -- the same bead reads on light and dark alike. */
 .push-status { display: inline-flex; align-items: center; padding: 0 4px; }
 .push-dot {
@@ -1289,7 +1289,7 @@ a.menu-item:hover { color: var(--fg); }
 .app-body.resizing, .app-body.resizing > .sidebar-splitter { transition: none; }
 /* The sidebar edge (#345). Laid over the seam rather than given a grid column:
    the sidebar and the content meet at the content's own border, and a 6px
-   bar of border colour between them would draw a line the design never had.
+   bar of border color between them would draw a line the design never had.
    Out of the flow, it shows only on hover and focus, like the list splitter. */
 .app-body > .sidebar-splitter { position: absolute; top: 0; bottom: 0; left: calc(var(--sidebar-w) - 3px); background: transparent; transition: left .2s var(--ease); }
 .app-body > .sidebar-splitter:hover, .app-body > .sidebar-splitter:focus-visible { background: var(--accent); }
@@ -1302,7 +1302,8 @@ a.menu-item:hover { color: var(--fg); }
 .collapsed .compose-btn span { display: none; }
 .nav-section { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 4px; font-size: .75em; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-faint); }
 .nav-section .icon-btn { width: 24px; height: 24px; }
-.collapsed .nav-section { display: none; }
+/* Outweighs `.sidebar .nav-section { display: flex }` further down, which otherwise draws a cut-off heading in the collapsed strip. */
+.collapsed .nav-section, .app-body.collapsed .sidebar .nav-section { display: none; }
 .nav-item { position: relative; display: flex; align-items: center; gap: 12px; height: 36px; padding: 0 12px; border-radius: 0 999px 999px 0; margin-right: 8px; color: var(--fg); text-decoration: none; white-space: nowrap; transition: background .12s; user-select: none; font-weight: 450; }
 .nav-item:hover { background: var(--bg-hover); }
 .nav-item.unread .nav-label, .nav-item.unread .nav-count { font-weight: 700; color: var(--fg); }
@@ -1310,9 +1311,12 @@ a.menu-item:hover { color: var(--fg); }
 .nav-item.active.unread .nav-label, .nav-item.active.unread .nav-count { color: inherit; }
 .nav-item.drop-target { background: var(--accent-soft); outline: 2px dashed var(--accent); outline-offset: -2px; }
 .nav-item.folder-row.dragging { opacity: .45; }
-/* A folder colour tints its icon; the label keeps the sidebar's contrast. */
+/* A folder dragged between two others: a line where it will land. */
+.nav-item.folder-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.nav-item.folder-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+/* A folder color tints its icon; the label keeps the sidebar's contrast. */
 .folder-row .folder-icon { display: inline-flex; align-items: center; }
-/* .nav-item svg sets colour on the svg itself, so inheriting from the span is
+/* .nav-item svg sets color on the svg itself, so inheriting from the span is
    not enough -- the icon has to be targeted directly to win the cascade.
    The fill overrides lucide's own fill="none": a CSS rule beats a presentation
    attribute, and a solid folder reads at a glance where an outline does not. */
@@ -1458,6 +1462,11 @@ a.menu-item:hover { color: var(--fg); }
 .mail-list.two-line .msg-row .msg-from { width: auto; flex: 1; }
 .mail-list.two-line .msg-row .msg-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .mail-list.two-line .msg-row .msg-line1 { display: flex; align-items: center; gap: 8px; }
+/* Labels share the sender's line (#35). The sender gives way first, then the
+   labels, each of which truncates rather than pushing the date off the row. */
+.mail-list.two-line .msg-row .msg-line1 .msg-from { flex: 0 1 auto; min-width: 3em; }
+.mail-list.two-line .msg-row .msg-line1 .msg-labels { flex: 0 1 auto; min-width: 0; max-width: 55%; overflow: hidden; }
+.mail-list.two-line .msg-row .msg-line1 .msg-labels .tag { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: block; line-height: 18px; }
 .mail-list.two-line .msg-row .msg-main { display: flex; gap: 6px; }
 .mail-list.two-line .msg-row .msg-subject { flex: 0 1 auto; }
 .mail-list.two-line .msg-row .msg-preview { flex: 1; }
@@ -1535,7 +1544,7 @@ a.menu-item:hover { color: var(--fg); }
 .vcard-card { margin: 0 16px 12px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-sunken); display: flex; align-items: center; gap: 12px; }
 .unsubscribe-row { margin: 0 16px 8px; font-size: .88em; color: var(--fg-muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .reply-box { margin: 8px 16px 24px; }
-/* Wraps, because it does not fit. Three labelled buttons and an overflow need
+/* Wraps, because it does not fit. Three labeled buttons and an overflow need
    about 390px of it, which a 430px phone has and a 360px one does not -- and it
    was already over the line on the smaller ones before the overflow was added. */
 .reply-box .reply-prompt { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); color: var(--fg-muted); }
@@ -1567,6 +1576,9 @@ a.menu-item:hover { color: var(--fg); }
 .composer-head .title { flex: 1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .composer-head .status { color: var(--fg-faint); font-size: .8em; margin-right: 6px; white-space: nowrap; }
 .composer-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+/* An offer the draft makes about itself, above the editor: quiet, one line, and dismissible. */
+.composer-notice { display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 14px; background: var(--accent-soft); color: var(--accent-soft-fg); border-bottom: 1px solid var(--border); font-size: .85em; flex: 0 0 auto; }
+.composer-notice span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-fields { flex: 0 0 auto; padding: 0 12px; }
 .composer-field { display: flex; align-items: center; gap: 8px; min-height: 40px; border-bottom: 1px solid var(--border); padding: 4px 0; }
 .composer-field > label { color: var(--fg-muted); width: 42px; flex: 0 0 auto; font-size: .92em; }
@@ -1578,7 +1590,7 @@ a.menu-item:hover { color: var(--fg); }
 
 /*
  * A native <select>'s dropdown is painted by the browser from the element's own
- * colours, not the page's. `.from-select` is deliberately transparent so it
+ * colors, not the page's. `.from-select` is deliberately transparent so it
  * sits flush in the composer's From line -- which left its popup with no
  * background of its own, so the browser drew a light one while the text kept
  * the app's light foreground: light on light, unreadable in any dark theme.
@@ -1594,10 +1606,19 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
 .recipients .chip { height: 24px; }
 .recipients input { flex: 1; min-width: 120px; border: 0; background: transparent; outline: none; height: 28px; }
 .composer-editor { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
-.editor-area { flex: 1; min-height: 120px; overflow-y: auto; padding: 12px 16px; outline: none; line-height: 1.5; font-size: 14px; font-family: var(--font-sans); }
+/* Quoted mail lands in the app document, so contain it as .message-body does: its positioning cannot reach past the editor. */
+.editor-area { flex: 1; min-height: 120px; overflow-y: auto; contain: layout; padding: 12px 16px; outline: none; line-height: 1.5; font-size: 14px; font-family: var(--font-sans); }
 .editor-area:empty::before, .editor-area[data-empty="true"]::before { content: attr(data-placeholder); color: var(--fg-faint); pointer-events: none; position: absolute; }
 .editor-area blockquote { margin: 0 0 0 .8ex; border-left: 2px solid var(--border-strong); padding-left: 1ex; color: var(--fg-muted); }
 .editor-area img { max-width: 100%; height: auto; }
+/* Image resizing (Gitea issue #26): drawn over the editor, never inside it, so none of it is sent. */
+.img-resize-layer { position: absolute; pointer-events: none; overflow: hidden; z-index: 5; }
+.img-resize-frame { position: absolute; outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
+.img-resize-handle { position: absolute; right: -7px; bottom: -7px; width: 14px; height: 14px; background: var(--accent); border: 2px solid var(--bg-elev); border-radius: 3px; cursor: nwse-resize; pointer-events: auto; touch-action: none; }
+.img-resize-bar { position: absolute; display: flex; gap: 4px; padding: 3px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow-2); pointer-events: auto; }
+.img-resize-bar .btn-sm { height: 26px; padding: 0 8px; }
+.img-resize-bar .btn[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+@media (pointer: coarse) { .img-resize-handle { width: 24px; height: 24px; right: -12px; bottom: -12px; border-radius: 50%; } }
 .editor-area a { color: var(--link); }
 .editor-area .ihm-signature { color: var(--fg-muted); }
 .editor-area pre { font-family: var(--font-mono); background: var(--bg-sunken); padding: 8px; border-radius: 6px; overflow: auto; }
@@ -1745,6 +1766,52 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
 .admin-dns-type { flex: 0 0 48px; font-family: var(--font-mono); font-size: .78em; font-weight: 700; color: var(--accent-soft-fg); padding-top: 2px; }
 .admin-dns-name { font-size: .88em; font-weight: 550; word-break: break-all; }
 .admin-dns-value { display: block; font-family: var(--font-mono); font-size: .8em; color: var(--fg-muted); word-break: break-all; margin-top: 2px; max-height: 4.8em; overflow: hidden; }
+/* Column counts come from balancedColumns, so rows stay even; the widths
+   follow the space the grid actually has, not the window, since the folder
+   pane beside it can be any width. */
+.admin-dashboard { max-width: calc(var(--cols-wide, 3) * 300px + (var(--cols-wide, 3) - 1) * 12px); }
+.admin-cards-wrap { container: admin-cards / inline-size; margin-top: 8px; }
+.admin-dashboard-note { margin-top: 16px; }
+.admin-dashboard-note a { white-space: nowrap; }
+.admin-dashboard-note svg { vertical-align: -1px; }
+.admin-cards { display: grid; gap: 12px; grid-template-columns: repeat(var(--cols-wide, 3), minmax(0, 1fr)); max-width: calc(var(--cols-wide, 3) * 300px + (var(--cols-wide, 3) - 1) * 12px); }
+@container admin-cards (max-width: 760px) { .admin-cards { grid-template-columns: repeat(var(--cols-mid, 2), minmax(0, 1fr)); max-width: calc(var(--cols-mid, 2) * 300px + (var(--cols-mid, 2) - 1) * 12px); } }
+@container admin-cards (max-width: 480px) { .admin-cards { grid-template-columns: minmax(0, 1fr); max-width: none; } }
+.admin-card { display: flex; flex-direction: column; gap: 6px; height: 100%; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); color: var(--fg); text-decoration: none; }
+.admin-card.link:hover { background: var(--bg-hover); }
+.admin-card.link:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.admin-card-top { display: flex; align-items: center; gap: 8px; color: var(--fg-muted); }
+.admin-card-icon { display: inline-flex; color: var(--accent-soft-fg); }
+.admin-card-label { font-size: .85em; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; }
+.admin-card-value { font-size: 1.9em; font-weight: 650; line-height: 1.15; font-variant-numeric: tabular-nums; min-height: 1.15em; }
+.admin-card-placeholder { display: inline-block; width: 3.5ch; height: .9em; border-radius: var(--radius-sm); background: var(--bg-sunken); vertical-align: middle; }
+.admin-members { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius); }
+.admin-members li { display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 10px; border-bottom: 1px solid var(--border); }
+.admin-members li:last-child { border-bottom: 0; }
+.admin-members li.hint { display: block; }
+.admin-add-member { margin-top: 10px; }
+.admin-add-member .admin-search { max-width: none; display: block; }
+.admin-suggestions { margin-top: 6px; }
+.admin-recipients { max-height: 220px; overflow-y: auto; padding: 2px 0; }
+.admin-recipient-filter { display: block; max-width: none; margin-bottom: 8px; }
+.admin-sheet.admin-sheet-wide { width: min(620px, 100%); }
+.admin-checks { display: flex; flex-direction: column; gap: 2px; }
+.admin-check { display: flex; align-items: center; gap: 8px; padding: 4px 2px; cursor: pointer; }
+.admin-check.disabled { cursor: default; color: var(--fg-muted); }
+.admin-perms-tools { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.admin-perms-tools .admin-search { flex: 1; min-width: 180px; max-width: none; }
+.admin-perms-tools select { width: auto; }
+.admin-perm-group { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 6px; overflow: hidden; }
+.admin-perm-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; background: var(--bg-sunken); font-weight: 600; text-align: left; }
+.admin-perm-head:hover { background: var(--bg-hover); }
+.admin-perm-rows { list-style: none; margin: 0; padding: 0; }
+.admin-perm-rows li { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-top: 1px solid var(--border); font-size: .92em; }
+.admin-perm-rows li.granted { box-shadow: inset 3px 0 0 var(--accent); }
+.admin-perm-rows .mono { font-family: var(--font-mono); font-size: .8em; word-break: break-all; }
+.admin-perm-state { width: auto; min-width: 110px; flex: none; }
+.admin-tenant-logo { width: 40px; height: 40px; object-fit: contain; border-radius: var(--radius-sm); background: var(--bg-sunken); flex: none; }
+.admin-tenant-logo.sm { width: 24px; height: 24px; }
+.admin-quota-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0 12px; }
 .admin-kv { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; align-items: center; margin: 0; font-size: .92em; }
 .admin-kv dt { color: var(--fg-muted); }
 .admin-kv dd { margin: 0; }
@@ -1753,8 +1820,7 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
 /* ==========================================================================
    Contacts
    ========================================================================== */
-.contacts-layout { display: grid; grid-template-columns: 220px minmax(280px, 360px) 1fr; height: 100%; min-height: 0; flex: 1; }
-.contacts-books { border-right: 1px solid var(--border); padding: 12px 8px; overflow-y: auto; overflow-x: hidden; }
+.contacts-layout { display: grid; grid-template-columns: var(--list-size, 320px) auto minmax(0, 1fr); height: 100%; min-height: 0; flex: 1; }
 .contacts-list { border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
 .contacts-list .list-search { padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .contacts-scroll { flex: 1; overflow-y: auto; }
@@ -1833,7 +1899,7 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
 .ev-chip.timed:hover { background: var(--bg-hover) !important; }
 .ev-chip.declined { text-decoration: line-through; opacity: .6; }
 .ev-chip.tentative { border-style: dashed; opacity: .85; }
-.ev-chip.cancelled { text-decoration: line-through; opacity: .5; }
+.ev-chip.canceled { text-decoration: line-through; opacity: .5; }
 .week-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .week-head { display: grid; grid-template-columns: 56px repeat(var(--cols, 7), 1fr); border-bottom: 1px solid var(--border); flex: 0 0 auto; }
 .week-head .wh-day { padding: 8px 4px 4px; text-align: center; border-left: 1px solid var(--border); cursor: pointer; }
@@ -2000,7 +2066,7 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
 .ptr-dial.armed { color: var(--accent); border-color: var(--accent); }
 
 /*
- * A tap that leaves a grey rectangle behind reads as a rendering glitch rather
+ * A tap that leaves a gray rectangle behind reads as a rendering glitch rather
  * than as feedback, and every surface here has a :active or a ripple of its own.
  */
 @media (hover: none) {
@@ -2015,7 +2081,6 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
 @media (max-width: 1100px) {
   :root { --list-w: 44%; }
   .msg-row .msg-from { width: 140px; }
-  .contacts-layout { grid-template-columns: 200px 300px 1fr; }
 }
 @media (max-width: 900px) {
   .mail-layout:not(.pane-off):not(.pane-bottom) { grid-template-columns: 1fr !important; }
@@ -2036,7 +2101,7 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
   .admin-table .hide-mobile { display: none; }
   .admin-sheet { width: 100%; border-left: 0; box-shadow: none; }
   .contacts-layout { grid-template-columns: 1fr; }
-  .contacts-books { display: none; }
+  .contacts-layout .splitter { display: none; }
   .contacts-layout.detail .contacts-list { display: none; }
   .contacts-layout:not(.detail) .contact-detail { display: none; }
   .cal-layout { grid-template-columns: 1fr; }
@@ -2112,13 +2177,13 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
  * icons at 36px (the search filter at 30), the folder twisty at 18, the row ⋮
  * at 24. Growing the boxes would reflow a top bar that has no room to give, so
  * each control keeps the size it draws at and gains a transparent hit area
- * centred on it. Rows grow for real, because a 44px hit area inside a 36px row
+ * centered on it. Rows grow for real, because a 44px hit area inside a 36px row
  * would reach into the rows above and below and steal their taps.
  */
 @media (pointer: coarse) {
   .icon-btn, .nav-twisty { position: relative; }
   /* `.drill-into` already draws at 44px and is excluded: expanding a control
-     that is big enough only lets it reach into its neighbour. */
+     that is big enough only lets it reach into its neighbor. */
   .icon-btn:not(.drill-into)::after, .nav-twisty[role="button"]::after {
     content: "";
     position: absolute;
@@ -2155,11 +2220,11 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
  *
  * Paper has no theme. Whatever palette is on screen, the tokens are pinned to
  * a light, unpainted set here -- backgrounds white rather than the light
- * theme's greys, since a printer would otherwise lay ink over the whole sheet.
+ * theme's grays, since a printer would otherwise lay ink over the whole sheet.
  * Doing it on the tokens rather than per rule is what reaches the message
  * body: it renders in a shadow root this stylesheet cannot select into, and
  * follows the app theme through inherited custom properties (see
- * EMAIL_BASE_CSS in lib/html.ts). Mail that brings colours of its own is left
+ * EMAIL_BASE_CSS in lib/html.ts). Mail that brings colors of its own is left
  * alone -- it is not themed in the first place.
  *
  * `!important` rather than a longer selector: the dark palettes sit on
@@ -2206,7 +2271,7 @@ select optgroup { background-color: var(--bg-elev); color: var(--fg); }
   .app, .app-body, .main, .mail-layout, .mail-reading-pane, .thread-view, .thread-scroll { display: block !important; height: auto !important; overflow: visible !important; grid-template-columns: 1fr !important; border: 0 !important; }
   /*
    * `break-inside: avoid` on the whole card is what put the first message on
-   * page two: a message longer than a sheet cannot honour it, and Chrome
+   * page two: a message longer than a sheet cannot honor it, and Chrome
    * answers by moving the card to a fresh page and breaking it there anyway --
    * leaving page one holding nothing but the subject. Only the header is
    * indivisible now, and it is kept with the body that follows it.
@@ -2341,11 +2406,11 @@ button.dp-open:disabled { cursor: default; opacity: .5; }
 /* The senders whose remote images load without asking, in Privacy & safety. */
 .trusted-senders { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
 
-/* The banner naming a sender from outside the organisation. */
+/* The banner naming a sender from outside the organization. */
 .remote-banner.external-banner { background: var(--warn-soft); border-color: var(--warn); }
 /*
- * The signature banner's colour is the claim it is making, so the quiet tones
- * are deliberate. "Signed by somebody new" is grey, because an unknown
+ * The signature banner's color is the claim it is making, so the quiet tones
+ * are deliberate. "Signed by somebody new" is gray, because an unknown
  * certificate that verifies against itself has established nothing worth a
  * green tick; green is kept for the one case that earned it, a signer matching
  * what was pinned the first time. Red is for a signer that changed.
@@ -2373,3 +2438,7 @@ button.dp-open:disabled { cursor: default; opacity: .5; }
 .ev-resize { position: absolute; left: 0; right: 0; bottom: 0; height: 8px; cursor: ns-resize; touch-action: none; }
 .ev-resize::after { content: ""; position: absolute; left: 50%; bottom: 2px; width: 18px; height: 2px; margin-left: -9px; border-radius: 2px; background: currentColor; opacity: 0; }
 .ev-block:hover .ev-resize::after { opacity: .5; }
+
+/* What arrived from the operating system's share sheet, shown before it is opened. */
+.share-summary { margin: 0 0 8px; padding-left: 1ex; border-left: 2px solid var(--border-strong); color: var(--fg-muted); overflow-wrap: anywhere; }
+.share-summary-files { margin: 0 0 8px; padding-left: 1.2em; color: var(--fg-muted); overflow-wrap: anywhere; }

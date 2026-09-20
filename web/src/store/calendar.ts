@@ -5,7 +5,7 @@ import { toUTCDate, toLocalDateTime, zonedToDate, parseDuration, DAY_MS, browser
 import { t } from "@/lib/i18n";
 import { useContacts } from "./contacts";
 import { BIRTHDAY_CALENDAR_ID, birthdaysInRange, isBirthdayEvent, type Birthday } from "@/lib/birthdays";
-import { looksLikeCalendar, parseIcs, toIcs, type IcsEvent } from "@/lib/ics";
+import { looksLikeCalendar, parseIcs, toIcs, type IcsEvent } from "@/lib/calendar/ics";
 import { withBase } from "@/lib/basePath";
 import { settings, useSettings } from "./settings";
 import { useSession } from "./session";
@@ -18,6 +18,13 @@ export interface EventInstance {
   end: Date;
   allDay: boolean;
   calendar: Calendar | undefined;
+  /**
+   * The account the event lives in, for one from a calendar somebody shared;
+   * absent for the reader's own. Event ids only mean something inside their
+   * account, so every write about this event goes there, never to the
+   * reader's own account under the owner's id (#49).
+   */
+  accountId?: Id;
 }
 
 /*
@@ -108,7 +115,7 @@ export function isOccurrence(event: CalendarEvent): boolean {
  * before it is sent — rejected properties throw, inherited ones are reported to
  * the caller — rather than being posted hopefully and believed.
  *
- * [#26]: https://github.com/Coffey-Labs/ihasmail/issues/26
+ * [#26]: https://git.coffeylabs.org/coffey-labs/ihasmail-github-archive/issues/26
  */
 const OCCURRENCE_REJECTED = new Set([
   "baseEventId", "calendarIds", "isDraft", "isOrigin", "utcStart", "utcEnd",
@@ -230,6 +237,18 @@ export interface SharedCalendar {
 export const sharedKey = (accountId: Id, id: Id): string => `${accountId}:${id}`;
 
 /**
+ * Shared calendars a new event can go into: the ones drawn beside the
+ * reader's own (subscribed, or added here -- see `instancesIn`) whose share
+ * lets them write.
+ */
+export function writableSharedCalendars(shared: SharedCalendar[], addedShares: string[]): SharedCalendar[] {
+  const added = new Set(addedShares);
+  return shared.filter((c) =>
+    (c.calendar.isSubscribed || added.has(sharedKey(c.accountId, c.calendar.id))) &&
+    (c.calendar.myRights.mayWriteAll || c.calendar.myRights.mayWriteOwn));
+}
+
+/**
  * An event begun outside the calendar -- from a message, so far.
  *
  * The editor lives inside CalendarView and the reader is somewhere else when
@@ -282,12 +301,16 @@ interface CalendarState {
   instancesIn(start: Date, end: Date): EventInstance[];
   /** Re-fetch every subscribed calendar. */
   refreshSubscriptions(): Promise<void>;
-  getEvent(id: Id): Promise<CalendarEvent | null>;
-  createEvent(event: Partial<CalendarEvent>, calendarId: Id, sendInvites: boolean): Promise<Id>;
+  /*
+   * The event calls take the account the event lives in -- `EventInstance`'s
+   * `accountId` -- and default to the reader's own. See `EventInstance`.
+   */
+  getEvent(id: Id, accountId?: Id): Promise<CalendarEvent | null>;
+  createEvent(event: Partial<CalendarEvent>, calendarId: Id, sendInvites: boolean, accountId?: Id): Promise<Id>;
   /** Returns the properties that had to be left to the series, if any. */
-  updateEvent(event: CalendarEvent, patch: Record<string, unknown>, sendInvites: boolean, scope: EventScope): Promise<string[]>;
-  destroyEvent(event: CalendarEvent, sendInvites: boolean, scope: EventScope): Promise<void>;
-  rsvp(event: CalendarEvent, status: "accepted" | "tentative" | "declined", comment?: string): Promise<void>;
+  updateEvent(event: CalendarEvent, patch: Record<string, unknown>, sendInvites: boolean, scope: EventScope, accountId?: Id): Promise<string[]>;
+  destroyEvent(event: CalendarEvent, sendInvites: boolean, scope: EventScope, accountId?: Id): Promise<void>;
+  rsvp(event: CalendarEvent, status: "accepted" | "tentative" | "declined", comment?: string, accountId?: Id): Promise<void>;
   createCalendar(data: Partial<Calendar>): Promise<Id>;
   updateCalendar(id: Id, patch: Partial<Calendar>): Promise<void>;
   destroyCalendar(id: Id): Promise<void>;
@@ -333,11 +356,11 @@ function forImport(event: Partial<CalendarEvent>): Partial<CalendarEvent> {
 }
 
 /**
- * The events a calendar already holds, for recognising a re-import.
+ * The events a calendar already holds, for recognizing a re-import.
  *
  * A UID is what makes an event the same event across calendars, and the import
  * already keeps the file's own wherever there is one -- so the thing needed to
- * recognise a re-import was there all along and nothing looked at it. Asked for
+ * recognize a re-import was there all along and nothing looked at it. Asked for
  * once per import rather than once per event: `CalendarEvent/query` does take a
  * `uid` filter, but a file of two thousand events would be two thousand
  * queries.
@@ -409,14 +432,13 @@ export const useCalendar = create<CalendarState>((set, get) => ({
     if (accountId !== get().accountId) set({ accountId, calendars: {}, events: {}, ranges: {} });
     set({ available });
     if (!available) return;
-    await get().loadCalendars();
+    // Side by side: none of the three waits on another, and together they share a request.
+    const identities = client.call<GetResponse<ParticipantIdentity>>("ParticipantIdentity/get", { accountId, ids: null }).then(
+      (res) => set({ identities: res.list }),
+      () => set({ identities: [] }),
+    );
     void get().loadSharedCalendars();
-    try {
-      const res = await client.call<GetResponse<ParticipantIdentity>>("ParticipantIdentity/get", { accountId, ids: null });
-      set({ identities: res.list });
-    } catch {
-      set({ identities: [] });
-    }
+    await Promise.all([get().loadCalendars(), identities]);
   },
 
   /*
@@ -434,15 +456,16 @@ export const useCalendar = create<CalendarState>((set, get) => ({
     const session = useSession.getState();
     const own = session.ownAccountFor(CAP.calendars);
     const accounts = Object.entries(session.session?.accounts ?? {}).filter(([id, a]) => a.isPersonal === false && id !== own);
-    const found: SharedCalendar[] = [];
-    for (const [accountId, account] of accounts) {
-      try {
-        const res = await client.call<GetResponse<Calendar>>("Calendar/get", { accountId, ids: null, properties: CALENDAR_PROPS });
-        for (const calendar of res.list) found.push({ accountId, accountName: account.name, calendar });
-      } catch {
-        continue;
-      }
-    }
+    // Every account at once, in one request, and listed in the session's order.
+    const answers = await Promise.all(
+      accounts.map(([accountId, account]) =>
+        client.call<GetResponse<Calendar>>("Calendar/get", { accountId, ids: null, properties: CALENDAR_PROPS }).then(
+          (res) => res.list.map((calendar): SharedCalendar => ({ accountId, accountName: account.name, calendar })),
+          (): SharedCalendar[] => [],
+        ),
+      ),
+    );
+    const found = answers.flat();
     set({ sharedCalendars: found });
     // Fill in whatever windows are already on screen.
     for (const key of Object.keys(get().ranges)) {
@@ -498,7 +521,8 @@ export const useCalendar = create<CalendarState>((set, get) => ({
     const accounts = [...new Set(shared.map((c) => c.accountId))];
     const ids: string[] = [];
     const events: Record<string, CalendarEvent> = {};
-    for (const accountId of accounts) {
+    // Every account at once, rather than one waiting on the last.
+    await Promise.all(accounts.map(async (accountId) => {
       try {
         const res = await client.chain([
           ["CalendarEvent/query", { accountId, filter: { after: toLocalDateTime(start), before: toLocalDateTime(end) }, timeZone: tz, sort: [{ property: "start", isAscending: true }], expandRecurrences: true, limit: 2000 }, "q"],
@@ -512,10 +536,9 @@ export const useCalendar = create<CalendarState>((set, get) => ({
         }
       } catch {
         // One account refusing must not empty the calendar of the others.
-        continue;
       }
-    }
-    set((s) => ({ sharedEvents: { ...s.sharedEvents, ...events }, sharedRanges: { ...s.sharedRanges, [key]: ids } }));
+    }));
+    set((s) => ({ sharedEvents: { ...s.sharedEvents, ...events }, sharedRanges: key in s.ranges ? { ...s.sharedRanges, [key]: ids } : s.sharedRanges }));
   },
 
   async loadCalendars() {
@@ -535,7 +558,12 @@ export const useCalendar = create<CalendarState>((set, get) => ({
     const accountId = get().accountId;
     if (!accountId) return;
     const key = `${start.getTime()}|${end.getTime()}`;
-    if (!force && get().ranges[key]) return;
+    const held = get().ranges[key];
+    if (!force && held) {
+      // Shown again, so the last to be dropped.
+      set((s) => ({ ranges: keepRecent(s.ranges, key, held) }));
+      return;
+    }
     set({ loading: true });
     const tz = settings().timeZone ?? browserTimeZone;
     try {
@@ -560,7 +588,8 @@ export const useCalendar = create<CalendarState>((set, get) => ({
       set((s) => {
         const events = { ...s.events };
         for (const e of g.list) events[e.id] = e;
-        return { events, ranges: { ...s.ranges, [key]: q.ids }, loading: false, error: null };
+        const ranges = keepRecent(s.ranges, key, q.ids);
+        return { events, ranges, sharedRanges: onlyKeys(s.sharedRanges, ranges), loading: false, error: null };
       });
       void get().loadSharedRange(start, end);
     } catch (err) {
@@ -618,7 +647,7 @@ export const useCalendar = create<CalendarState>((set, get) => ({
       for (const b of birthdaysInRange(Object.values(useContacts.getState().cards), start, end)) {
         birthdays.push({
           key: b.id,
-          event: synthesiseBirthdayEvent(b),
+          event: synthesizeBirthdayEvent(b),
           start: b.date,
           end: new Date(b.date.getTime() + DAY_MS),
           allDay: true,
@@ -639,7 +668,7 @@ export const useCalendar = create<CalendarState>((set, get) => ({
         if (e.end <= start || e.start >= end) continue;
         birthdays.push({
           key: `${calId}:${e.uid}:${e.start.getTime()}`,
-          event: synthesiseSubscriptionEvent(sub.id, e),
+          event: synthesizeSubscriptionEvent(sub.id, e),
           start: e.start,
           end: e.end,
           allDay: e.allDay,
@@ -665,6 +694,7 @@ export const useCalendar = create<CalendarState>((set, get) => ({
        hiding one is remembered under the same account-qualified key. */
     const sharedKeys = new Set<string>();
     for (const list of Object.values(sharedRanges)) for (const k of list) sharedKeys.add(k);
+    const added = new Set(settings().addedShares);
     for (const k of sharedKeys) {
       const e = sharedEvents[k];
       if (!e) continue;
@@ -676,7 +706,6 @@ export const useCalendar = create<CalendarState>((set, get) => ({
          an account linked for its files offered its calendar too. `isSubscribed`
          is the only thing separating "shared with me" from "reachable", so
          nothing unsubscribed is drawn. */
-      const added = new Set(settings().addedShares);
       const theirs: Record<Id, Calendar> = {};
       for (const c of sharedCalendars) {
         if (c.accountId !== accountId) continue;
@@ -686,23 +715,27 @@ export const useCalendar = create<CalendarState>((set, get) => ({
       if (calId && !theirs[calId]) continue;
       const inst = toInstance(e, theirs);
       if (!inst) continue;
+      // Keyed and addressed by account: the owner's ids can equal the reader's.
+      inst.key = k;
+      inst.accountId = accountId;
       if (inst.end > start && inst.start < end) out.push(inst);
     }
     out.sort((a, b) => a.start.getTime() - b.start.getTime() || b.end.getTime() - a.end.getTime());
     return [...out, ...birthdays];
   },
 
-  async getEvent(id) {
-    const accountId = get().accountId;
+  async getEvent(id, owner) {
+    const accountId = owner ?? get().accountId;
     if (!accountId) return null;
     const res = await client.call<GetResponse<CalendarEvent>>("CalendarEvent/get", { accountId, ids: [id], properties: EVENT_PROPS });
     const e = res.list[0];
-    if (e) set((s) => ({ events: { ...s.events, [e.id]: e } }));
+    // Only the reader's own go into `events`; a shared one is keyed by account.
+    if (e && accountId === get().accountId) set((s) => ({ events: { ...s.events, [e.id]: e } }));
     return e ?? null;
   },
 
-  async createEvent(event, calendarId, sendInvites) {
-    const accountId = get().accountId!;
+  async createEvent(event, calendarId, sendInvites, owner) {
+    const accountId = owner ?? get().accountId!;
     const obj = { "@type": "Event", uid: crypto.randomUUID(), ...event, calendarIds: { [calendarId]: true } };
     const res = await client.call<SetResponse<CalendarEvent>>("CalendarEvent/set", { accountId, create: { e: obj }, sendSchedulingMessages: sendInvites });
     const err = res.notCreated?.e;
@@ -711,7 +744,7 @@ export const useCalendar = create<CalendarState>((set, get) => ({
     return res.created!.e!.id;
   },
 
-  async updateEvent(event, patch, sendInvites, scope) {
+  async updateEvent(event, patch, sendInvites, scope, owner) {
     /*
      * A derived birthday has no server-side existence, so there is nothing to
      * write and an id that would mean nothing if sent. The UI already keeps
@@ -720,7 +753,7 @@ export const useCalendar = create<CalendarState>((set, get) => ({
      * it.
      */
     if (isBirthdayEvent(event.id) || isSubscriptionEvent(event.id)) return [];
-    const accountId = get().accountId!;
+    const accountId = owner ?? get().accountId!;
     const id = scope === "occurrence" ? await currentOccurrenceId(accountId, event) : eventIdForScope(event, scope);
     // An occurrence takes less than the series does, and says so about only
     // half of it. Narrow the patch here rather than posting it hopefully.
@@ -733,7 +766,7 @@ export const useCalendar = create<CalendarState>((set, get) => ({
     return dropped;
   },
 
-  async destroyEvent(event, sendInvites, scope) {
+  async destroyEvent(event, sendInvites, scope, owner) {
     /*
      * A derived birthday has no server-side existence, so there is nothing to
      * write and an id that would mean nothing if sent. The UI already keeps
@@ -742,15 +775,21 @@ export const useCalendar = create<CalendarState>((set, get) => ({
      * it.
      */
     if (isBirthdayEvent(event.id) || isSubscriptionEvent(event.id)) return;
-    const accountId = get().accountId!;
+    const accountId = owner ?? get().accountId!;
     const id = scope === "occurrence" ? await currentOccurrenceId(accountId, event) : eventIdForScope(event, scope);
     const res = await client.call<SetResponse>("CalendarEvent/set", { accountId, destroy: [id], sendSchedulingMessages: sendInvites });
     const err = res.notDestroyed?.[id];
     if (err) throw new CalendarSetError(err);
     set((s) => {
-      const events = { ...s.events };
       // Drop both ids: the one that was sent, and the object as the caller
       // held it. An occurrence destroy leaves the master alone on purpose.
+      if (accountId !== s.accountId) {
+        const sharedEvents = { ...s.sharedEvents };
+        delete sharedEvents[sharedKey(accountId, id)];
+        if (scope === "occurrence") delete sharedEvents[sharedKey(accountId, event.id)];
+        return { sharedEvents };
+      }
+      const events = { ...s.events };
       delete events[id];
       if (scope === "occurrence") delete events[event.id];
       return { events };
@@ -758,7 +797,7 @@ export const useCalendar = create<CalendarState>((set, get) => ({
     get().invalidate();
   },
 
-  async rsvp(event, status, comment) {
+  async rsvp(event, status, comment, owner) {
     const mine = myParticipantKeys(event, get().identities);
     if (!mine.length) throw new Error("You are not a participant of this event");
     const patch: Record<string, unknown> = {};
@@ -771,7 +810,7 @@ export const useCalendar = create<CalendarState>((set, get) => ({
     // pointers 0.16.20 allows on an occurrence -- so this would silently mean
     // "only that day" if it were aimed at an instance. Accepting an invitation
     // means accepting the series.
-    await get().updateEvent(event, patch, true, "series");
+    await get().updateEvent(event, patch, true, "series", owner);
   },
 
   async createCalendar(data) {
@@ -821,7 +860,7 @@ export const useCalendar = create<CalendarState>((set, get) => ({
    *
    * The query deliberately omits `expandRecurrences`, so what comes back is the
    * stored event and `id` is a real id. Callers rely on that — `InviteCard`
-   * removes a cancelled event by handing this straight to `destroyEvent` — so
+   * removes a canceled event by handing this straight to `destroyEvent` — so
    * it is a property of this method, not an accident of the default.
    */
   async findByUid(uid) {
@@ -881,7 +920,7 @@ export const useCalendar = create<CalendarState>((set, get) => ({
    * the disagreement. Weighed on #279 and kept: an import is not the place to
    * start sending mail on somebody's behalf, and the alternative is a file
    * dropped into a calendar mailing a room full of people who never asked for
-   * it. Whoever is organising can send the update from the event itself.
+   * it. Whoever is organizing can send the update from the event itself.
    */
   async importIcs(text, calendarId) {
     const accountId = get().accountId!;
@@ -984,7 +1023,7 @@ export const useCalendar = create<CalendarState>((set, get) => ({
    * flattened the rule would import somewhere else as an unmaintainable pile.
    *
    * Written in the browser, unlike the import, which hands the parsing to the
-   * server. There is no `CalendarEvent/serialise` to hand this to -- the JMAP
+   * server. There is no `CalendarEvent/serialize` to hand this to -- the JMAP
    * calendar drafts define parsing and nothing the other way -- so it is done
    * here from the objects the server already returns.
    */
@@ -1000,11 +1039,16 @@ export const useCalendar = create<CalendarState>((set, get) => ({
     if (types.has("CalendarEvent")) get().invalidate();
   },
 
+  /*
+   * Load the windows held again, after something changed.
+   *
+   * Only the few most recently shown are held (see `keepRecent`), so this is a
+   * handful of queries rather than one for every month ever looked at. They
+   * are replaced where they are, not emptied first: clearing them made the
+   * calendar go blank until the answers came back.
+   */
   invalidate() {
-    // Force reload of all ranges currently cached.
-    const keys = Object.keys(get().ranges);
-    set({ ranges: {} });
-    for (const k of keys) {
+    for (const k of Object.keys(get().ranges)) {
       const [s, e] = k.split("|").map(Number) as [number, number];
       void get().loadRange(new Date(s), new Date(e), true);
     }
@@ -1014,6 +1058,27 @@ export const useCalendar = create<CalendarState>((set, get) => ({
     set({ draft });
   },
 }));
+
+/**
+ * How many loaded windows are held.
+ *
+ * Every week or month the reader visited used to stay, and each was queried
+ * again whenever any event changed, and walked by every render. A window
+ * dropped here is simply loaded again if the reader goes back to it.
+ */
+export const RANGES_KEPT = 4;
+
+/** `ranges` with `key` set and moved to the end, trimmed to the most recent `RANGES_KEPT`. */
+export function keepRecent(ranges: Record<string, Id[]>, key: string, ids: Id[]): Record<string, Id[]> {
+  const { [key]: _old, ...rest } = ranges;
+  const entries = [...Object.entries(rest), [key, ids] as [string, Id[]]];
+  return Object.fromEntries(entries.slice(-RANGES_KEPT));
+}
+
+/** `map` restricted to the windows still held. */
+function onlyKeys<T>(map: Record<string, T>, held: Record<string, unknown>): Record<string, T> {
+  return Object.fromEntries(Object.entries(map).filter(([k]) => k in held));
+}
 
 /**
  * Whether an event is part of a series.
@@ -1053,7 +1118,7 @@ function birthdayCalendar(): Calendar {
 }
 
 /** A CalendarEvent shaped enough for the views, and for nothing else. */
-function synthesiseBirthdayEvent(b: Birthday): CalendarEvent {
+function synthesizeBirthdayEvent(b: Birthday): CalendarEvent {
   const local = `${b.date.getFullYear()}-${String(b.date.getMonth() + 1).padStart(2, "0")}-${String(b.date.getDate()).padStart(2, "0")}T00:00:00`;
   return {
     id: b.id,
@@ -1088,7 +1153,7 @@ function subscriptionCalendar(sub: { id: string; name: string; color: string }):
   } as unknown as Calendar;
 }
 
-function synthesiseSubscriptionEvent(subId: string, e: IcsEvent): CalendarEvent {
+function synthesizeSubscriptionEvent(subId: string, e: IcsEvent): CalendarEvent {
   const local = `${e.start.getFullYear()}-${String(e.start.getMonth() + 1).padStart(2, "0")}-${String(e.start.getDate()).padStart(2, "0")}T${String(e.start.getHours()).padStart(2, "0")}:${String(e.start.getMinutes()).padStart(2, "0")}:00`;
   return {
     id: `${subscriptionCalendarId(subId)}:${e.uid}`,
