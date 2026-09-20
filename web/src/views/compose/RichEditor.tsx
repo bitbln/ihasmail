@@ -1,8 +1,9 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import { AlignCenter, AlignLeft, AlignRight, Bold, Code, Eraser, Image as ImageIcon, Indent, Italic, Link as LinkIcon, List, ListOrdered, Outdent, Quote, Redo, Smile, Strikethrough, Underline, Undo, Palette, Highlighter, Type } from "lucide-react";
-import { sanitizeEditorHtml } from "@/lib/html";
+import { sanitizeEditorHtml } from "@/lib/text/html";
 import { Popover, useMenu } from "@/ui/popover";
 import { t as translate } from "@/lib/i18n";
+import { ImageResizer } from "./ImageResizer";
 
 export interface RichEditorHandle {
   focus(): void;
@@ -24,6 +25,15 @@ interface Props {
   imageUpload?: (file: File) => Promise<string>;
 }
 
+/** Pasted or dropped images larger than this go in as attachments, not inline. */
+export const INLINE_IMAGE_MAX = 10 * 1024 * 1024;
+
+/** A single http(s) or mailto address, nothing else: what may become a link over a selection. */
+export function isLinkToPaste(text: string): boolean {
+  if (!text || /\s/.test(text)) return false;
+  return /^(https?:\/\/[^\s]+|mailto:[^\s@]+@[^\s@]+)$/i.test(text);
+}
+
 const EMOJI = "😀 😃 😄 😁 😆 😅 😂 🤣 🙂 😉 😊 😇 🥰 😍 😘 😋 😜 🤪 🤗 🤔 🤫 🤐 😐 😑 😶 😏 😒 🙄 😬 😌 😔 😪 😴 😷 🤒 🤕 🤢 🤮 🥵 🥶 🥴 😵 🤯 🤠 🥳 😎 🤓 🧐 😕 😟 🙁 😮 😯 😲 😳 🥺 😦 😧 😨 😰 😥 😢 😭 😱 😖 😣 😞 😓 😩 😫 🥱 😤 😡 😠 🤬 👍 👎 👌 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ 👋 🤚 🖐️ ✋ 🖖 👏 🙌 👐 🤲 🤝 🙏 💪 ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 ❣️ 💕 💯 💥 🔥 ✨ 🎉 🎊 🎈 🎁 🏆 ⭐ 🌟 ☀️ 🌙 ⚡ ☕ 🍕 🍺 🚀 ✈️ 🏠 💼 📅 📎 📌 ✅ ❌ ⚠️ ❓ ❗ 💡 🔔 📧 🙈 🙉 🙊 🐱 🐶 🦊 🐼".split(" ");
 const COLORS = ["#000000", "#434343", "#666666", "#999999", "#b7b7b7", "#cccccc", "#d9d9d9", "#ffffff", "#980000", "#ff0000", "#ff9900", "#ffff00", "#00ff00", "#00ffff", "#4a86e8", "#0000ff", "#9900ff", "#ff00ff", "#e6b8af", "#f4cccc", "#fce5cd", "#fff2cc", "#d9ead3", "#d0e0e3", "#c9daf8", "#cfe2f3", "#d9d2e9", "#ead1dc", "#cc4125", "#e06666", "#f6b26b", "#ffd966", "#93c47d", "#76a5af", "#6d9eeb", "#6fa8dc", "#8e7cc3", "#c27ba0", "#a61c00", "#cc0000", "#e69138", "#f1c232", "#6aa84f", "#45818e", "#3c78d8", "#3d85c6", "#674ea7", "#a64d79"];
 
@@ -37,6 +47,8 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
   const linkMenu = useMenu();
   const [linkUrl, setLinkUrl] = useState("");
   const savedRange = useRef<Range | null>(null);
+  /** The image whose size is being changed, if one has been clicked. */
+  const [selectedImg, setSelectedImg] = useState<HTMLImageElement | null>(null);
 
   // Sync external html → DOM (only when it differs from what we emitted)
   useEffect(() => {
@@ -45,6 +57,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
     if (html !== lastEmitted.current) {
       el.innerHTML = html;
       lastEmitted.current = html;
+      setSelectedImg(null);
       setEmpty(!el.textContent?.trim() && !el.querySelector("img"));
     }
   }, [html]);
@@ -72,6 +85,8 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
     if (!el) return;
     const v = el.innerHTML;
     lastEmitted.current = v;
+    // Deleted, or typed over: there is nothing left to resize.
+    setSelectedImg((img) => (img && el.contains(img) ? img : null));
     setEmpty(!el.textContent?.trim() && !el.querySelector("img"));
     onChange(v);
   }, [onChange]);
@@ -127,9 +142,24 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
       const f = imgItem.getAsFile();
       if (f) {
         e.preventDefault();
-        insertImageFile(f);
+        // A large image is a file to send, not a picture in the text: it goes
+        // in as an attachment, where an inline copy would swell every reply.
+        if (f.size > INLINE_IMAGE_MAX && onFiles) onFiles([f]);
+        else insertImageFile(f);
         return;
       }
+    }
+    /*
+     * A link pasted over selected words makes those words the link, the way
+     * most editors do, instead of replacing them with the address.
+     */
+    const pastedText = e.clipboardData.getData("text/plain").trim();
+    const sel = window.getSelection();
+    if (isLinkToPaste(pastedText) && sel && !sel.isCollapsed && elRef.current?.contains(sel.anchorNode)) {
+      e.preventDefault();
+      document.execCommand("createLink", false, pastedText);
+      emit();
+      return;
     }
     const htmlData = e.clipboardData.getData("text/html");
     if (htmlData) {
@@ -169,8 +199,9 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
     const files = Array.from(e.dataTransfer.files);
     if (!files.length) return;
     e.preventDefault();
-    const images = files.filter((f) => f.type.startsWith("image/"));
-    const others = files.filter((f) => !f.type.startsWith("image/"));
+    const inline = (f: File) => f.type.startsWith("image/") && !(f.size > INLINE_IMAGE_MAX && onFiles);
+    const images = files.filter(inline);
+    const others = files.filter((f) => !inline(f));
     images.forEach(insertImageFile);
     if (others.length) onFiles?.(others);
   };
@@ -205,6 +236,14 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
         onMouseUp={saveRange}
         onPaste={onPaste}
         onDrop={onDrop}
+        onClick={(e) => setSelectedImg(e.target instanceof HTMLImageElement ? e.target : null)}
+        onContextMenu={(e) => {
+          // A right-click on an image offers its sizes, which is where the
+          // report went looking for them, instead of the browser's menu.
+          if (!(e.target instanceof HTMLImageElement)) return;
+          e.preventDefault();
+          setSelectedImg(e.target);
+        }}
         onDragOver={(e) => e.preventDefault()}
         onKeyDown={(e) => {
           if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
@@ -221,6 +260,9 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
         aria-multiline="true"
         aria-label={translate("Message body")}
       />
+      {selectedImg && elRef.current && (
+        <ImageResizer area={elRef.current} img={selectedImg} onChange={emit} onClose={() => setSelectedImg(null)} />
+      )}
       {showToolbar && (
         <div className="editor-toolbar" role="toolbar" aria-label={translate("Formatting")}>
           <button type="button" className="icon-btn" title={translate("Undo (Ctrl+Z)")} onMouseDown={(e) => e.preventDefault()} onClick={() => exec("undo")}><Undo size={16} /></button>

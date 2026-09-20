@@ -47,7 +47,7 @@ export function CalendarSettings() {
           </select>
         </div>
       </div>
-      <h2>{t("Colour categories")}</h2>
+      <h2>{t("Color categories")}</h2>
       <p className="hint">{t("Outlook-style categories you can assign to events from the right-click menu or the event editor. The category name is stored on the event, so it syncs to other clients.")}</p>
       {s.eventCategories.map((c, i) => (
         <div key={c.name} className="card">
@@ -111,6 +111,14 @@ export function CalendarSettings() {
         onChange={(v) => update({ birthdayCalendar: v })}
         label={t("Show birthdays from your contacts")}
         hint={t("A calendar of its own, derived from the birthdays already on your contact cards. Nothing is written anywhere — the dates stay on the cards, and an event disappears when the contact does or the birthday is cleared. It can be hidden from the calendar\u2019s own sidebar without turning it off here.")}
+      />
+
+      <h2>{t("Contacts")}</h2>
+      <Switch
+        checked={s.collectRecipients}
+        onChange={(v) => update({ collectRecipients: v })}
+        label={t("Save people you write to as contacts")}
+        hint={t("Everyone you send to who isn\u2019t a contact yet is added to the Collected address book, so they\u2019re suggested on every device. Your own addresses are never added.")}
       />
 
       <h2>{t("Working hours")}</h2>

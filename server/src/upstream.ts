@@ -1,4 +1,5 @@
 import { config } from "./config.js";
+import { grantsAdministration } from "./adminGate.js";
 
 export interface UpstreamSession {
   capabilities: Record<string, unknown>;
@@ -52,6 +53,87 @@ export function upstreamFor(username: string): string {
   if (at < 0) return config.stalwartUrl;
   const domain = username.slice(at + 1).trim().toLowerCase().replace(/\.$/, "");
   return config.stalwartServers[domain] ?? config.stalwartUrl;
+}
+
+/**
+ * Where the administrator signed in as `username` opens Stalwart's own
+ * administration.
+ *
+ * What the operator configured wins -- STALWART_ADMIN_URL for the default
+ * server, a servers file entry's `adminUrl` for a routed domain -- and what was
+ * found on the account's own server (`detected`) is used otherwise. Routing is
+ * the same as `upstreamFor`: a routed domain is never pointed at the default
+ * server's administration, and `detected` already came from its own server.
+ */
+export function adminUrlFor(username: string, detected: string | null = null): string | null {
+  const at = username.lastIndexOf("@");
+  const domain = at < 0 ? "" : username.slice(at + 1).trim().toLowerCase().replace(/\.$/, "");
+  if (domain && domain in config.stalwartServers) return config.stalwartAdminUrls[domain] ?? detected;
+  return config.stalwartAdminUrl || detected;
+}
+
+/** Stalwart's own default for its web interface, written at first boot (`manager/defaults.rs`). */
+const DEFAULT_ADMIN_PREFIX = "/admin";
+
+/**
+ * The prefix Stalwart's administration is served under, from the `x:Application`
+ * answers: "/admin" if an enabled application claims it, null if the server
+ * says there is none (disabled, removed, or moved to another prefix). A refusal
+ * -- the account may not read applications -- is not an answer, and gets
+ * Stalwart's default.
+ */
+export function adminPrefixFrom(responses: [string, Record<string, unknown>, string][]): string | null {
+  const get = responses.find(([name]) => name === "x:Application/get" || name === "error");
+  if (!get || get[0] === "error") return DEFAULT_ADMIN_PREFIX;
+  const list = (get[1].list as Array<{ enabled?: unknown; urlPrefix?: unknown }> | undefined) ?? [];
+  const claims = list.some((app) => app.enabled !== false && app.urlPrefix && typeof app.urlPrefix === "object" && DEFAULT_ADMIN_PREFIX in (app.urlPrefix as object));
+  return claims ? DEFAULT_ADMIN_PREFIX : null;
+}
+
+/**
+ * The public origin a Stalwart session belongs to: the host it advertises in
+ * its own URLs, which is the address people reach it at even when this server
+ * talks to it on a private one (STALWART_URL=http://127.0.0.1:…). A relative
+ * URL falls back to the configured base.
+ */
+export function advertisedOrigin(session: Pick<UpstreamSession, "apiUrl" | "baseUrl">): string | null {
+  try {
+    return new URL(session.apiUrl, session.baseUrl).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Where this session's server serves its own administration, found from the
+ * server itself: its advertised origin, and the prefix its web interface
+ * application is installed under. Null when the server says it has none.
+ */
+async function detectAdminUrl(authorization: string, session: UpstreamSession): Promise<string | null> {
+  const origin = advertisedOrigin(session);
+  const accountId = session.primaryAccounts?.[STALWART_CAP];
+  if (!origin) return null;
+  let prefix: string | null = DEFAULT_ADMIN_PREFIX;
+  if (accountId) {
+    try {
+      const res = await fetch(absoluteUpstream(session.apiUrl, session.baseUrl), {
+        method: "POST",
+        headers: { authorization, "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          using: [JMAP_CORE, STALWART_CAP],
+          methodCalls: [
+            ["x:Application/query", { accountId }, "q"],
+            ["x:Application/get", { accountId, "#ids": { resultOf: "q", name: "x:Application/query", path: "/ids" }, properties: ["enabled", "urlPrefix"] }, "g"],
+          ],
+        }),
+        signal: AbortSignal.timeout(config.upstreamTimeout),
+      });
+      if (res.ok) prefix = adminPrefixFrom(((await res.json()) as { methodResponses?: [string, Record<string, unknown>, string][] }).methodResponses ?? []);
+    } catch {
+      /* unreachable is not "none": keep the default */
+    }
+  }
+  return prefix ? `${origin}${prefix}/` : null;
 }
 
 export function wellKnownUrl(base: string = config.stalwartUrl): string {
@@ -142,10 +224,32 @@ export interface AccountInfo {
    * access.
    */
   permissions: string[];
+  /**
+   * Where this server's own administration is, found rather than configured:
+   * see `detectAdminUrl`. Only looked for when the account administers.
+   */
+  adminUrl?: string | null;
 }
 
 const infoCache = new Map<string, { info: AccountInfo; fetchedAt: number }>();
 const INFO_CACHE_MS = 30 * 60_000;
+
+/*
+ * Both caches are keyed by session, and used to lose an entry only when that
+ * session signed out or was refused -- not when it simply expired, which is how
+ * most sessions end. An entry past its age is never used again, so dropping
+ * those on a timer is all it takes to stop them accumulating.
+ */
+export function sweepUpstreamCaches(now = Date.now()): void {
+  for (const [id, v] of sessionCache) if (now - v.fetchedAt >= SESSION_CACHE_MS) sessionCache.delete(id);
+  for (const [id, v] of infoCache) if (now - v.fetchedAt >= INFO_CACHE_MS) infoCache.delete(id);
+}
+setInterval(() => sweepUpstreamCaches(), SESSION_CACHE_MS).unref();
+
+/** How many sessions the caches hold; for tests. */
+export function upstreamCacheSizes(): { sessions: number; info: number } {
+  return { sessions: sessionCache.size, info: infoCache.size };
+}
 const EMPTY_INFO: AccountInfo = { locale: null, edition: null, permissions: [] };
 
 /**
@@ -163,7 +267,7 @@ const SCRIPT_MODIFIERS: Record<string, string> = {
 };
 
 /**
- * Normalise a POSIX-style locale ("de_DE.UTF-8@euro") into a BCP-47 tag
+ * Normalize a POSIX-style locale ("de_DE.UTF-8@euro") into a BCP-47 tag
  * ("de-DE"). Returns null for the locale-less values ("C", "POSIX") and for
  * anything that does not look like a language tag.
  */
@@ -249,10 +353,10 @@ function localeOf(call: [string, Record<string, unknown>, string] | undefined): 
 }
 
 /**
- * Permission names in the form the source serialises them.
+ * Permission names in the form the source serializes them.
  *
  * Stalwart 0.16 builds `/api/account`'s list from the same enum as everything
- * else, which serialises as camelCase (`sysAccountGet`). Its documentation and
+ * else, which serializes as camelCase (`sysAccountGet`). Its documentation and
  * OpenAPI example show kebab-case (`sys-account-get`) instead. Until a live
  * server settles which is true, both are read as the one form, so a check
  * written against `sysAccountGet` holds either way.
@@ -294,6 +398,9 @@ export async function getAccountInfo(sessionId: string, authorization: string, s
   try {
     info = await fetchAccountInfo(authorization, session);
     info = { ...info, ...(await fetchServerAccount(authorization, session.baseUrl)) };
+    // Only an administrator is shown the link, so only an administrator's
+    // server is asked where it is.
+    if (grantsAdministration(info.permissions)) info = { ...info, adminUrl: await detectAdminUrl(authorization, session) };
   } catch {
     /* all of this is a nicety - never fail the session over it */
   }
@@ -336,7 +443,7 @@ export function localizeSession(s: UpstreamSession, extras: Record<string, unkno
  * So by default only the path and query are taken from the advertised URL;
  * scheme, host and port come from the configured base. That is what a proxy
  * should have done all along -- the operator named the route on purpose.
- * STALWART_FOLLOW_ADVERTISED_URLS=1 restores the old behaviour for a setup
+ * STALWART_FOLLOW_ADVERTISED_URLS=1 restores the old behavior for a setup
  * that genuinely needs to reach Stalwart at a different origin than the one
  * it was given.
  */

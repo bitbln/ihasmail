@@ -1,7 +1,7 @@
-import { Fragment, lazy, Suspense, useEffect, useState } from "react";
+import { Fragment, lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Route, Switch, Redirect, useLocation, Router } from "wouter";
 import { useSession } from "@/store/session";
-import { useMail } from "@/store/mail";
+import { notifyOwnWhileAway, ownAccountAway, useMail } from "@/store/mail";
 import { scheduleSupported, useScheduled } from "@/store/scheduled";
 import { useContacts } from "@/store/contacts";
 import { useCalendar } from "@/store/calendar";
@@ -16,12 +16,12 @@ import { LoginPage } from "@/views/Login";
 import { AppShell } from "@/views/AppShell";
 import { MailView } from "@/views/mail/MailView";
 import { ComposerDock } from "@/views/compose/ComposerDock";
-import { setUnreadBadge } from "@/lib/notify";
-import { publishWorkerFacts } from "@/lib/swFacts";
+import { requestNotificationPermission, setBaseTitle, setUnreadBadge } from "@/lib/notify/notify";
+import { publishWorkerFacts } from "@/lib/sw/swFacts";
 import { PAINTED_FROM_CACHE, useSettings, syncedPart } from "@/store/settings";
-import { armSettingsSync, loadRemoteSettings, queueSettingsPush, settingsAlreadyLoadedFor, settingsSyncAvailable } from "@/lib/settingsSync";
+import { armSettingsSync, loadRemoteSettings, loadSettingsOnce, queueSettingsPush, settingsSyncAvailable } from "@/lib/settingsSync";
 import { loadSettingsPolicy } from "@/lib/settingsPolicy";
-import { listenForVerification, renewWebPush } from "@/lib/webpushEnable";
+import { listenForVerification, renewWebPush } from "@/lib/notify/webpushEnable";
 import { plural, t, useLanguageVersion, whenLanguageReady } from "@/lib/i18n";
 import { confirmLeaveUnsaved, hasUnsavedChanges } from "@/lib/unsavedChanges";
 import { BASE_PATH, withBase } from "@/lib/basePath";
@@ -44,7 +44,7 @@ export function App() {
    * knowing its strings just changed. Rather than make every one of the
    * thousand call sites a subscriber -- which would turn extracting a string
    * from "wrap it" into "wrap it and add a hook" -- the whole tree is thrown
-   * away and rebuilt when the catalogue changes. Picking a language is a
+   * away and rebuilt when the catalog changes. Picking a language is a
    * once-in-an-account event; paying for it there is far cheaper than paying
    * for it on every render everywhere.
    */
@@ -54,9 +54,9 @@ export function App() {
   }, [bootstrap]);
 
   /*
-   * Wait for the catalogue before the first paint.
+   * Wait for the catalog before the first paint.
    *
-   * The tree is rebuilt when a catalogue lands, so components recover on
+   * The tree is rebuilt when a catalog lands, so components recover on
    * their own -- but a string computed in an effect does not. A toast fired
    * in the gap is emitted in English and stays English, in an interface that
    * is otherwise not. The wait costs nothing visible: the session bootstrap
@@ -129,7 +129,7 @@ function AuthedApp() {
    * or the sign-out that every deploy causes -- the first frame is the
    * defaults, and the defaults are English. Rendering then means anything
    * computed before the settings land is computed in the wrong language: not
-   * the interface, which is rebuilt when the catalogue arrives, but a string
+   * the interface, which is rebuilt when the catalog arrives, but a string
    * emitted once, like a toast. That is why the stale-folder toast came out
    * in English on an otherwise German screen.
    *
@@ -140,22 +140,22 @@ function AuthedApp() {
    * Once per account, not once per mount: this subtree is keyed on the
    * language version, so picking a language throws it away and builds it
    * again. Re-reading the settings file there would apply a copy written
-   * before the change and undo it.
+   * before the change and undo it. And the load is not this mount's to
+   * cancel: the settings file choosing a language remounts the tree midway
+   * through it, and a load cut off there never armed the pushes, so nothing
+   * changed afterwards was saved (Gitea issue #23). `loadSettingsOnce` runs
+   * it to the end and lets every mount wait on it.
    */
   const [ready, setReady] = useState(PAINTED_FROM_CACHE);
   useEffect(() => {
-    if (settingsAlreadyLoadedFor(accountId)) {
-      setReady(true);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
+    let canceled = false;
+    void loadSettingsOnce(accountId, async (isCurrent) => {
       /* Before the account's own settings, so both the seeding below and the
          enforcement inside `hydrate` have something to apply. */
       await loadSettingsPolicy();
-      if (cancelled) return;
+      if (!isCurrent()) return;
       const remote = await loadRemoteSettings();
-      if (cancelled) return;
+      if (!isCurrent()) return;
       if (remote) useSettings.getState().hydrate(remote);
       // No settings file: this account has never had settings of its own, so
       // the installation's defaults are what it starts on rather than
@@ -174,20 +174,21 @@ function AuthedApp() {
           other: "Your administrator changed {n} settings",
         }), { action: { label: t("Settings"), onClick: () => { window.location.href = withBase("/settings/general"); } } });
       }
-      // The catalogue for whatever language that turned out to be. Hydrating
+      // The catalog for whatever language that turned out to be. Hydrating
       // asks for it; this is waiting for the answer.
       await whenLanguageReady();
-      if (cancelled) return;
-      setReady(true);
+      if (!isCurrent()) return;
       // Pushes were held back until now so they could not race the load. A
       // change made while it was in flight was kept, and goes out here.
       armSettingsSync();
       // No file yet — seed one from what this browser has, so the next device
       // to sign in starts from these rather than from the defaults.
       if (!remote && settingsSyncAvailable()) queueSettingsPush(syncedPart(useSettings.getState().settings));
-    })();
+    }).then(() => {
+      if (!canceled) setReady(true);
+    });
     return () => {
-      cancelled = true;
+      canceled = true;
     };
   }, [accountId]);
 
@@ -230,6 +231,8 @@ function AuthedApp() {
         timer = null;
         for (const [a, types] of pending) {
           if (a === useMail.getState().accountId) void useMail.getState().applyChanges(types);
+          // The reader's own mail, while a shared mailbox is in view, is still announced
+          if (a === ownAccountAway() && types.has("Email")) void notifyOwnWhileAway();
           if (a === useContacts.getState().accountId) useContacts.getState().applyChanges(types);
           if (a === useCalendar.getState().accountId) useCalendar.getState().applyChanges(types);
           if (a === useFiles.getState().accountId) useFiles.getState().applyChanges(types);
@@ -259,12 +262,57 @@ function AuthedApp() {
     return id ? (s.mailboxes[id]?.unreadEmails ?? 0) : 0;
   });
   const appName = useSession((s) => s.session?.ihasmail?.appName) || DEFAULT_APP_NAME;
+
+  /*
+   * A shared mailbox's mail, when it comes into view, and the reader's own
+   * when it goes back. Push carries nothing for an account only shared with
+   * the reader, so while one is open it is polled.
+   */
+  const viewing = useSession((s) => s.viewing);
+  const viewedOnce = useRef(false);
   useEffect(() => {
-    void import("@/lib/notify").then((m) => {
-      m.setBaseTitle(appName);
-      setUnreadBadge(inboxUnread);
-    });
-  }, [inboxUnread, appName]);
+    if (!viewedOnce.current) {
+      viewedOnce.current = true;
+      if (!viewing) return;
+    }
+    const mail = useMail.getState();
+    void mail.loadMailboxes();
+    void mail.loadIdentities();
+    if (!viewing) return;
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void useMail.getState().applyChanges(new Set(["Email", "Mailbox"]));
+      }
+    }, 60_000);
+    return () => window.clearInterval(poll);
+  }, [viewing]);
+
+  // A mailbox shared or taken away while the app is open shows up when the
+  // reader comes back to it, without signing in again
+  useEffect(() => {
+    let last = 0;
+    const onVisible = () => {
+      if (document.visibilityState !== "visible" || Date.now() - last < 60_000) return;
+      last = Date.now();
+      void useSession.getState().refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+
+  const viewEnded = useSession((s) => s.viewEnded);
+  useEffect(() => {
+    if (!viewEnded) return;
+    toast.show(t("You no longer have access to {name}. Back to your own mail.", { name: viewEnded }));
+    useSession.getState().clearViewEnded();
+  }, [viewEnded]);
+
+  // A shared mailbox in view is named in the tab
+  const viewingName = useSession((s) => (s.viewing ? s.session?.accounts[s.viewing]?.name : undefined));
+  useEffect(() => {
+    setBaseTitle(viewingName ? `${viewingName} · ${appName}` : appName);
+    setUnreadBadge(inboxUnread);
+  }, [inboxUnread, appName, viewingName]);
 
   /*
    * Leave the service worker its briefing.
@@ -276,15 +324,19 @@ function AuthedApp() {
    * See lib/swFacts.ts.
    */
   const archiveId = useMail((s) => s.roleId("archive"));
+  const inboxId = useMail((s) => s.roleId("inbox"));
   const languageVersion = useLanguageVersion();
   useEffect(() => {
-    void publishWorkerFacts(accountId, archiveId);
-  }, [accountId, archiveId, languageVersion]);
+    // The worker acts on the reader's own mail; while a shared mailbox is in
+    // view, the archive folder here is its
+    if (viewing) return;
+    void publishWorkerFacts(accountId, archiveId, inboxId);
+  }, [accountId, archiveId, inboxId, languageVersion, viewing]);
 
   // Request notification permission lazily when enabled
   const notif = useSettings((s) => s.settings.desktopNotifications);
   useEffect(() => {
-    if (notif) void import("@/lib/notify").then((m) => m.requestNotificationPermission());
+    if (notif) void requestNotificationPermission();
   }, [notif]);
 
   // Nothing worth painting until the account's settings are in force; see the

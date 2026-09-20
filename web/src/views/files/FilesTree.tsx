@@ -5,7 +5,7 @@ import { useFiles } from "@/store/files";
 import { useSession } from "@/store/session";
 import type { FileNode, Id } from "@/jmap/types";
 import { canDropFileNodes, NODE_MIME, readDraggedIds, isShared } from "@/lib/filenode";
-import { entriesFromDrop, hasDirectory, planUpload } from "@/lib/dropUpload";
+import { entriesFromDrop, hasDirectory, planUpload } from "@/lib/input/dropUpload";
 import { MenuItem, MenuSep, Popover, useMenu } from "@/ui/popover";
 import { confirmDialog, promptDialog } from "@/ui/dialog";
 import { toast } from "@/ui/toast";
@@ -32,6 +32,7 @@ async function refreshShares(force = false): Promise<void> {
     return;
   }
   await useFiles.getState().init();
+  await useFiles.getState().discoverShared();
 }
 
 
@@ -62,7 +63,7 @@ export function FilesTree() {
   const [rootDrop, setRootDrop] = useState(false);
   const menu = useMenu();
 
-  /* Shared with the list pane: a drag starting in one has to be recognised by
+  /* Shared with the list pane: a drag starting in one has to be recognized by
      the other. See the note on `draggingId` in the store. */
   const draggingIds = useFiles((s) => s.draggingIds);
   const setDragging = useFiles((s) => s.setDragging);

@@ -7,7 +7,7 @@ import type { FileNode, Id } from "@/jmap/types";
 import { formatSize, formatListDate } from "@/lib/format";
 import { canDropFileNodes, isShared, NODE_MIME, readDraggedIds } from "@/lib/filenode";
 import { previewKind } from "@/lib/preview";
-import { entriesFromDrop, hasDirectory, planUpload } from "@/lib/dropUpload";
+import { entriesFromDrop, hasDirectory, planUpload } from "@/lib/input/dropUpload";
 import { ShareDialog } from "../settings/ShareDialog";
 import { Empty, Spinner } from "@/ui/misc";
 import { MenuItem, MenuSep, Popover, useMenu } from "@/ui/popover";
@@ -37,7 +37,7 @@ export function FilesView({ nodeId }: { nodeId?: string }) {
   const [editTarget, setEditTarget] = useState<{ id: Id; blobId: Id | null } | null>(null);
   const [startInEdit, setStartInEdit] = useState(false);
   /* Shared with the sidebar tree, so a row dragged onto a folder there is
-     recognised. See the note on `draggingId` in the store. */
+     recognized. See the note on `draggingId` in the store. */
   const draggingIds = files.draggingIds;
   const setDragging = files.setDragging;
   const inputRef = useRef<HTMLInputElement>(null);

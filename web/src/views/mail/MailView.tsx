@@ -7,7 +7,7 @@ import { useSettings } from "@/store/settings";
 import { withBase } from "@/lib/basePath";
 import { useCompose } from "@/store/compose";
 import { buildFilter, describeFilter, parseQuery } from "@/lib/search";
-import { keyboard } from "@/lib/keyboard";
+import { keyboard } from "@/lib/input/keyboard";
 import { useIsNarrow } from "@/ui/misc";
 import { Splitter } from "@/ui/Splitter";
 import { MessageList } from "./MessageList";
@@ -17,16 +17,19 @@ import { LabelPicker } from "./LabelPicker";
 import type { Id } from "@/jmap/types";
 import { confirmDialog } from "@/ui/dialog";
 import { toast } from "@/ui/toast";
-import { isUnknownMailbox } from "@/lib/mailboxRoute";
+import { isUnknownMailbox } from "@/lib/mailbox/mailboxRoute";
 import { scheduledMailboxIdFrom, useScheduled } from "@/store/scheduled";
 import { plural, t as translate, tNode } from "@/lib/i18n";
-import { mailboxDisplayName } from "@/lib/mailboxName";
+import { mailboxDisplayName } from "@/lib/mailbox/mailboxName";
 
 export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; threadId?: string; search?: boolean }) {
   const [, navigate] = useLocation();
   const searchStr = useSearch();
   const mailboxes = useMail((s) => s.mailboxes);
   const mailboxesLoaded = useMail((s) => s.mailboxesLoaded);
+  // Enough to ask for a folder: the kept copy of the folder list will do, and
+  // staying true as the server's copy replaces it keeps the query from repeating.
+  const mailboxesKnown = useMail((s) => s.mailboxesLoaded || s.mailboxesCached);
   const inboxId = useMail((s) => s.roleId("inbox"));
   const query = useMail((s) => s.query);
   const list = useMail((s) => s.list);
@@ -79,8 +82,25 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
     [settings.listSortScope, settings.listSortPreset, settings.listSortLevels],
   );
 
+  /*
+   * What the list query reads from the folder map: names, roles and places in
+   * the tree. `mailboxes` itself is replaced on every reload -- every push that
+   * touches mail reloads it for the counts -- and depending on it directly made
+   * each reload build a new query, which `query()` answered with a second full
+   * refresh of the list.
+   */
+  const folderShape = useMemo(
+    () =>
+      Object.values(mailboxes)
+        .map((m) => `${m.id}\u0000${m.name}\u0000${m.role ?? ""}\u0000${m.parentId ?? ""}`)
+        .sort()
+        .join("\u0001"),
+    [mailboxes],
+  );
+
   // Build & run the list query
   const listQuery = useMemo<ListQuery | null>(() => {
+    const mailboxes = useMail.getState().mailboxes;
     if (search) {
       if (!q) return null;
       const parsed = parseQuery(q);
@@ -94,14 +114,14 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
     // are outgoing, and collapsing them into their threads hides them.
     const isDraftsOrSent = mb?.role === "drafts" || mb?.role === "sent" || mailboxId === scheduledId;
     return { key: "", filter: { inMailbox: mailboxId }, sort: sortForFolder(mailboxId), collapseThreads: settings.conversationMode && !isDraftsOrSent, mailboxId };
-  }, [search, q, mailboxId, mailboxes, settings.conversationMode, scheduledId]);
+  }, [search, q, mailboxId, folderShape, settings.conversationMode, scheduledId]);
 
   useEffect(() => {
-    if (listQuery && mailboxesLoaded) void query(listQuery);
-  }, [listQuery, query, mailboxesLoaded]);
+    if (listQuery && mailboxesKnown) void query(listQuery);
+  }, [listQuery, query, mailboxesKnown]);
 
   // Nothing moves a message out of Scheduled when its hold expires, so settle
-  // the folder up on the way in: sent messages to Sent, cancelled ones back to
+  // the folder up on the way in: sent messages to Sent, canceled ones back to
   // Drafts, and refresh what is still waiting.
   useEffect(() => {
     if (mailboxesLoaded && mailboxId && mailboxId === scheduledId) void reconcile();
@@ -165,6 +185,24 @@ export function MailView({ mailboxId, threadId, search }: { mailboxId?: string; 
     if (threadId) return ids.findIndex((id) => rowThreadId(id) === threadId);
     return -1;
   }, [ids, focusId, openMessageId, threadId, rowThreadId]);
+
+  /*
+   * Reading down a folder usually means the next row is next. Once the open
+   * conversation has had its turn, the one below starts loading while the
+   * reader reads, so moving on waits on nothing.
+   */
+  const nextRowId = threadId && currentRowIndex >= 0 ? ids[currentRowIndex + 1] : undefined;
+  const nextThreadId = nextRowId ? rowThreadId(nextRowId) : undefined;
+  useEffect(() => {
+    if (!nextThreadId || nextThreadId === threadId) return;
+    const start = () => useMail.getState().prefetchThread(nextThreadId);
+    if (typeof window.requestIdleCallback === "function") {
+      const handle = window.requestIdleCallback(start, { timeout: 2000 });
+      return () => window.cancelIdleCallback(handle);
+    }
+    const handle = window.setTimeout(start, 500);
+    return () => window.clearTimeout(handle);
+  }, [nextThreadId, threadId]);
 
   /** Email ids affected by an action on rows (selection or focused/open row). */
   const targetIds = useCallback(

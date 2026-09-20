@@ -1,5 +1,6 @@
 import type { Id, Invocation, JmapResponse, JmapSession, MethodError, UploadResponse } from "./types";
 import { withBase } from "@/lib/basePath";
+import { reauthAtFrontDoor } from "@/lib/frontDoor";
 
 export const CAP = {
   core: "urn:ietf:params:jmap:core",
@@ -75,11 +76,22 @@ const HEADERS = { "content-type": "application/json", accept: "application/json"
  * whatever the deployment happens to be called.
  */
 export async function apiFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(withBase(path), {
-    ...init,
-    headers: { ...HEADERS, ...(init.headers as Record<string, string> | undefined) },
-    credentials: "same-origin",
-  });
+  let res: Response;
+  try {
+    res = await fetch(withBase(path), {
+      ...init,
+      headers: { ...HEADERS, ...(init.headers as Record<string, string> | undefined) },
+      credentials: "same-origin",
+    });
+  } catch (err) {
+    // A sign-in proxy redirecting to its login looks exactly like this (#47).
+    void reauthAtFrontDoor();
+    throw err;
+  }
+  if (res.redirected && !(res.headers.get("content-type") ?? "").includes("json")) {
+    // Followed to somebody else's page on this origin: the same door.
+    void reauthAtFrontDoor();
+  }
   if (res.status === 401 && !path.startsWith("/api/auth/login")) {
     client.handleUnauthenticated();
     throw new ApiError(401, "unauthenticated", "Your session has expired. Please sign in again.");
@@ -104,6 +116,8 @@ export class JmapClient {
   private callCounter = 0;
   private unauthHandlers = new Set<() => void>();
   private stateHandlers = new Set<(sessionState: string) => void>();
+  /** The last session state announced, so a burst of replies announces it once. */
+  private announcedState: string | null = null;
 
   get maxCallsInRequest(): number {
     const core = this.session?.capabilities[CAP.core] as { maxCallsInRequest?: number } | undefined;
@@ -255,7 +269,8 @@ export class JmapClient {
     const body: Record<string, unknown> = { using: this.supportedUsing(using), methodCalls };
     if (createdIds) body.createdIds = createdIds;
     const res = await apiFetch<JmapResponse>("/api/jmap", { method: "POST", body: JSON.stringify(body) });
-    if (res.sessionState && this.session && res.sessionState !== this.session.state) {
+    if (res.sessionState && this.session && res.sessionState !== this.session.state && res.sessionState !== this.announcedState) {
+      this.announcedState = res.sessionState;
       for (const fn of this.stateHandlers) fn(res.sessionState);
     }
     return res;
@@ -321,7 +336,7 @@ export class JmapClient {
         else reject(new ApiError(xhr.status, (xhr.response as ApiErrorBody)?.error ?? "upload_failed", (xhr.response as ApiErrorBody)?.message ?? "Upload failed"));
       };
       xhr.onerror = () => reject(new ApiError(0, "network_error", "Network error during upload"));
-      xhr.onabort = () => reject(new ApiError(0, "aborted", "Upload cancelled"));
+      xhr.onabort = () => reject(new ApiError(0, "aborted", "Upload canceled"));
       opts.signal?.addEventListener("abort", () => xhr.abort());
       xhr.send(data);
     });
@@ -349,8 +364,8 @@ export class JmapClient {
   }
 }
 
-/** Map method name prefix → required capability URNs. */
-function usingFor(method: string): string[] {
+/** Map method name prefix → required capability URNs. Exported for the server compatibility test. */
+export function usingFor(method: string): string[] {
   const type = method.split("/")[0] ?? "";
   // Stalwart's registry: accounts, domains, credentials. Advertised per
   // account rather than in the session, which supportedUsing() allows for.

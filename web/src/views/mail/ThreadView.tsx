@@ -12,7 +12,7 @@ import { Spinner, useIsNarrow, useIsTouch } from "@/ui/misc";
 import { client } from "@/jmap/client";
 import { LabelPicker } from "./LabelPicker";
 import { threadScrollTarget } from "@/lib/threadScroll";
-import { useEdgeBack } from "@/lib/touch";
+import { useEdgeBack } from "@/lib/input/touch";
 import { plural, t } from "@/lib/i18n";
 
 /** How long the opening scroll keeps its place while bodies and images land. */
@@ -119,6 +119,22 @@ export function ThreadView({ threadId, mailboxId, onBack, actions, onNavigate, h
   for (const m of messages) if (!m.keywords.$seen) unreadAtOpen.current.ids.add(m.id);
   const wasUnread = unreadAtOpen.current.ids;
 
+  /*
+   * Which messages have been read while this conversation was open.
+   *
+   * Mark as unread on an open message used to undo itself: clearing `$seen`
+   * re-ran the timer below, which found an expanded unread message and marked
+   * it read again a moment later (Gitea issue #25). A message that has been
+   * read here and is unread again was made so on purpose -- by this reader or
+   * on another device -- so the timer leaves it alone until the conversation
+   * is opened again. Mail that arrives unread was never read here, and is
+   * still marked read as before. Accumulated during render, like the set
+   * above.
+   */
+  const readWhileOpen = useRef<{ key: Id | null; ids: Set<Id> }>({ key: null, ids: new Set() });
+  if (readWhileOpen.current.key !== threadKey) readWhileOpen.current = { key: threadKey, ids: new Set() };
+  for (const m of messages) if (m.keywords.$seen) readWhileOpen.current.ids.add(m.id);
+
   // Default expansion: unread when opened + last message expanded, others collapsed
   const lastId = messages[messages.length - 1]?.id;
   const isExpanded = useCallback(
@@ -133,7 +149,7 @@ export function ThreadView({ threadId, mailboxId, onBack, actions, onNavigate, h
   // Mark as read after delay
   useEffect(() => {
     if (!messages.length) return;
-    const unread = messages.filter((e) => !e.keywords.$seen && isExpanded(e)).map((e) => e.id);
+    const unread = messages.filter((e) => !e.keywords.$seen && isExpanded(e) && !readWhileOpen.current.ids.has(e.id)).map((e) => e.id);
     if (!unread.length || settings.markReadDelay < 0) return;
     if (markTimer.current) window.clearTimeout(markTimer.current);
     markTimer.current = window.setTimeout(() => void useMail.getState().markRead(unread, true), settings.markReadDelay * 1000);
@@ -224,7 +240,23 @@ export function ThreadView({ threadId, mailboxId, onBack, actions, onNavigate, h
   }, [messages, reply]);
 
   const subject = messages[0]?.subject || emails[thread?.emailIds[0] ?? ""]?.subject || "(no subject)";
-  const rowIds = thread ? thread.emailIds.filter((id) => emails[id]) : [];
+  /*
+   * What the toolbar acts on: the messages the pane is showing, not the thread
+   * they belong to.
+   *
+   * With conversation view off, opening a message opens that message -- the
+   * list shows it alone, the pane renders it alone, and the buttons above it
+   * said so, because `anyUnread` and the rest already read `messages`. Only the
+   * ids handed to the action still named the whole thread, so Mark as unread,
+   * Move to, Report spam and Delete quietly took every message in it (#414).
+   *
+   * Same fallback as the pane's: an id naming nothing in this thread means the
+   * whole conversation, so the buttons keep matching what is on screen.
+   */
+  const rowIds = useMemo(() => {
+    const loaded = thread ? thread.emailIds.filter((id) => emails[id]).map((id) => ({ id })) : [];
+    return visibleMessages(loaded, messageId).map((m) => m.id);
+  }, [thread, emails, messageId]);
   const anyUnread = messages.some((e) => !e.keywords.$seen);
   const anyStarred = messages.some((e) => e.keywords.$flagged);
   const inJunk = Boolean(mailboxId && mailboxes[mailboxId]?.role === "junk");

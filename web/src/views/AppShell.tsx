@@ -1,35 +1,42 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
-import { BookOpen, Calendar, ChevronsUpDown, FolderOpen, Globe, HelpCircle, LogOut, Mail, Menu as MenuIcon, Moon, PenSquare, Plus, RefreshCw, Settings, ShieldCheck, Sun, Upload, Users, X } from "lucide-react";
+import { BookOpen, Calendar, Check, ChevronsUpDown, FolderOpen, Globe, HelpCircle, LogOut, Mail, Menu as MenuIcon, Moon, PanelLeftClose, PanelLeftOpen, PenSquare, Plus, RefreshCw, Settings, ShieldCheck, Sun, Upload, Users, X } from "lucide-react";
 import { useSession } from "@/store/session";
+import { toast } from "@/ui/toast";
+import { SharedBar } from "./SharedBar";
 import { withBase } from "@/lib/basePath";
 import { DEFAULT_APP_NAME } from "@/lib/brand";
 import { useEffectiveTheme, useSettings } from "@/store/settings";
 import { toggleTarget } from "@/lib/palette";
 import { useMail } from "@/store/mail";
 import { draftFromMailto, useCompose } from "@/store/compose";
+import { AddAccountDialog } from "./AddAccountDialog";
+import { useOtherAccountsUnread, useOtherUnread } from "@/lib/otherAccounts";
 import { Avatar, useIsMobile } from "@/ui/misc";
 import { MenuItem, MenuSep, Popover, useMenu } from "@/ui/popover";
 import { Splitter } from "@/ui/Splitter";
 import { SearchBar } from "./SearchBar";
 import { MailboxTree } from "./mail/MailboxTree";
-import { FilesTree } from "./files/FilesTree";
-import { ContactsSidebar } from "./contacts/ContactsSidebar";
-import { CalendarSidebar } from "./calendar/CalendarSidebar";
 import { ShortcutsDialog, useGlobalShortcuts } from "./Shortcuts";
 import { MailboxPicker } from "./mail/MailboxPicker";
 import { formatSize } from "@/lib/format";
 import { collectShare } from "@/lib/shareTarget";
+import { offerShare } from "./ShareOffer";
 import { TranslateBoundary } from "@/ui/TranslateBoundary";
 import { t } from "@/lib/i18n";
-import { hasAdministration } from "@/lib/adminAccess";
+import { hasAdministration } from "@/lib/admin/adminAccess";
 import { usePermissions } from "./admin/usePermissions";
 import { AdminNav } from "./admin/AdminNav";
+
+// The other sections' sidebars load with the section, as their views already do.
+const FilesTree = lazy(() => import("./files/FilesTree").then((m) => ({ default: m.FilesTree })));
+const ContactsSidebar = lazy(() => import("./contacts/ContactsSidebar").then((m) => ({ default: m.ContactsSidebar })));
+const CalendarSidebar = lazy(() => import("./calendar/CalendarSidebar").then((m) => ({ default: m.CalendarSidebar })));
 
 /*
  * How far the sidebar edge can be dragged. Below about 228px the module bar
  * cuts "Calendar" and "Contacts" short in English; the floor sits a little
- * above that. Long folder names are allowed to ellipsise -- narrowing the pane
+ * above that. Long folder names are allowed to ellipsize -- narrowing the pane
  * is asking for that. The ceiling keeps a list and a reading pane beside it on
  * an ordinary laptop screen.
  */
@@ -46,6 +53,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [location, navigate] = useLocation();
   const isMobile = useIsMobile();
   const collapsed = useSettings((s) => s.settings.sidebarCollapsed);
+  const inboxUnread = useMail((s) => Object.values(s.mailboxes).find((m) => m.role === "inbox")?.unreadEmails ?? 0);
   const sidebarWidth = useSettings((s) => s.settings.sidebarWidth);
   const update = useSettings((s) => s.update);
   /*
@@ -66,6 +74,23 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pushState = useSession((s) => s.pushState);
   const session = useSession((s) => s.session);
   const logout = useSession((s) => s.logout);
+  // The other accounts signed in here, and adding one
+  const signedIn = useSession((s) => s.signedIn);
+  const canAddAccount = useSession((s) => s.canAddAccount);
+  const [addingAccount, setAddingAccount] = useState(false);
+  // New mail in the accounts not in front
+  useOtherAccountsUnread();
+  const otherUnread = useOtherUnread((s) => s.unread);
+  const anyOtherUnread = Object.values(otherUnread).some((n) => n > 0);
+  const bringForward = (sessionId: string) => {
+    acctMenu.close();
+    // A message being written belongs to the account it was started in
+    if (useCompose.getState().drafts.length) {
+      toast.show(t("Send or close the message you're writing first."));
+      return;
+    }
+    void useSession.getState().switchTo(sessionId);
+  };
   const appName = useSession((s) => s.session?.ihasmail?.appName) || DEFAULT_APP_NAME;
   const acctMenu = useMenu();
   const administers = hasAdministration(usePermissions());
@@ -117,31 +142,51 @@ export function AppShell({ children }: { children: ReactNode }) {
    * `addFiles` uploads as it goes, and there is nothing to upload to until the
    * session is in place. AppShell only exists once there is one.
    */
+  // Asked about first, not opened straight away: see `offerShare`.
   useEffect(() => {
-    void collectShare().then((share) => {
+    void collectShare().then(async (share) => {
       if (!share) return;
-      openShare(share);
       if (new URLSearchParams(window.location.search).has("share")) navigate("/mail", { replace: true });
+      await offerShare(share, openShare);
     });
   }, [openShare, navigate]);
 
   /*
-   * There is no account switcher any more.
+   * Mail other people let the reader into: a group's mailbox, or folders
+   * someone shared.
    *
-   * It existed to reach what other people shared, and was the wrong door: it
-   * moved the whole app to somebody else's account, and Stalwart advertises
-   * every capability on a shared account, so mail, calendar and contacts went
-   * with it and were refused. Shares are listed where they belong now -- in
-   * Files and in Contacts, beside the reader's own -- and found without anyone
-   * having to know an account switch was involved.
+   * There used to be an account switcher, and it was the wrong door: it moved
+   * the whole app to somebody else's account, and Stalwart advertises every
+   * capability on a shared account, so mail, calendar and contacts went with
+   * it and were refused. Calendars, contacts and files shares are listed where
+   * they belong, beside the reader's own. Mail is the one thing shown in place
+   * of the reader's, so this switches Mail alone, and offers only accounts
+   * that answered with mailboxes (lib/sharedMail).
    */
+  const viewing = useSession((s) => s.viewing);
+  const sharedMail = useSession((s) => s.sharedMail);
+  const switchTo = (id: string | null) => {
+    acctMenu.close();
+    if (id === viewing) return;
+    // A message being written belongs to the account it was started in
+    if (useCompose.getState().drafts.length) {
+      toast.show(t("Send or close the message you're writing first."));
+      return;
+    }
+    useSession.getState().view(id);
+    navigate("/mail");
+  };
 
   return (
-    <div className="app">
+    <div className={`app ${viewing ? "viewing-shared" : ""}`}>
+      <SharedBar />
       <header className="topbar">
-        <button className="icon-btn" aria-label={t("Menu")} onClick={() => (isMobile ? setDrawer((d) => !d) : update({ sidebarCollapsed: !collapsed }))}>
-          <MenuIcon size={22} />
-        </button>
+        {/* On a wide screen the folder list is toggled from the bottom of the rail; phones keep the menu button for the drawer. */}
+        {isMobile && (
+          <button className="icon-btn" aria-label={t("Menu")} onClick={() => setDrawer((d) => !d)}>
+            <MenuIcon size={22} />
+          </button>
+        )}
         <Link href="/mail" className="brand">
           <img src={withBase("/img/logo.png")} alt="" />
           {/* A product name, not a word: translated it is a different product.
@@ -161,11 +206,21 @@ export function AppShell({ children }: { children: ReactNode }) {
             <HelpCircle size={21} />
           </button>
           <ThemeToggle />
-          <Link href="/settings" className={`icon-btn ${section === "settings" ? "active" : ""}`} aria-label={t("Settings")} title={t("Settings")}>
-            <Settings size={21} />
-          </Link>
-          <button className="icon-btn" style={{ width: "auto", padding: "0 2px", borderRadius: 999 }} onClick={acctMenu.open} aria-label={t("Account")}>
+          {/* On a wide screen the rail carries Settings; phones have no rail, so they keep this one. */}
+          {isMobile && (
+            <Link href="/settings" className={`icon-btn ${section === "settings" ? "active" : ""}`} aria-label={t("Settings")} title={t("Settings")}>
+              <Settings size={21} />
+            </Link>
+          )}
+          <button
+            className="icon-btn"
+            style={{ width: "auto", padding: "0 2px", borderRadius: 999, position: "relative" }}
+            onClick={acctMenu.open}
+            aria-label={anyOtherUnread ? t("Account: new mail in another account") : t("Account")}
+          >
             <Avatar who={{ name: session?.username, email: session?.username }} size="sm" />
+            {/* Another signed-in account has unread mail */}
+            {anyOtherUnread && <span className="acct-dot" aria-hidden />}
           </button>
           <Popover anchor={acctMenu.anchor} onClose={acctMenu.close} align="end" width={280}>
             <div style={{ padding: "10px 10px 6px", display: "flex", gap: 10, alignItems: "center" }}>
@@ -178,11 +233,63 @@ export function AppShell({ children }: { children: ReactNode }) {
               </div>
             </div>
             <MenuSep />
+            {/* Each account signed in here, the one in front ticked */}
+            {(signedIn.length > 1 || canAddAccount) && (
+              <>
+                {signedIn.length > 1 && <div className="hint" style={{ padding: "4px 10px" }}>{t("Accounts")}</div>}
+                {signedIn.length > 1 &&
+                  signedIn.map((account) => (
+                    <MenuItem
+                      key={account.id}
+                      icon={account.front ? <Check size={16} /> : <Mail size={16} />}
+                      label={
+                        <span className="row" style={{ gap: 8, alignItems: "center" }}>
+                          <span className="notranslate grow truncate" translate="no">{account.username}</span>
+                          {!account.front && (otherUnread[account.id] ?? 0) > 0 && (
+                            <span className="nav-count" aria-label={t("Unread in the Inbox: {count}", { count: otherUnread[account.id]! })}>
+                              {otherUnread[account.id]! > 9999 ? "9999+" : otherUnread[account.id]}
+                            </span>
+                          )}
+                        </span>
+                      }
+                      active={account.front}
+                      onClick={() => (account.front ? acctMenu.close() : bringForward(account.id))}
+                    />
+                  ))}
+                {canAddAccount && (
+                  <MenuItem
+                    icon={<Plus size={16} />}
+                    label={t("Add account")}
+                    onClick={() => {
+                      acctMenu.close();
+                      setAddingAccount(true);
+                    }}
+                  />
+                )}
+                <MenuSep />
+              </>
+            )}
+            {sharedMail.length > 0 && (
+              <>
+                <div className="hint" style={{ padding: "4px 10px" }}>{t("Mail to show")}</div>
+                <MenuItem icon={viewing ? <Mail size={16} /> : <Check size={16} />} label={t("My mail")} active={!viewing} onClick={() => switchTo(null)} />
+                {sharedMail.map((account) => (
+                  <MenuItem
+                    key={account.id}
+                    icon={viewing === account.id ? <Check size={16} /> : <Users size={16} />}
+                    label={<span className="notranslate" translate="no">{account.name}</span>}
+                    active={viewing === account.id}
+                    onClick={() => switchTo(account.id)}
+                  />
+                ))}
+                <MenuSep />
+              </>
+            )}
             <MenuItem icon={<BookOpen size={16} />} label={t("Documentation")} href="https://docs.ihasmail.org" external />
             {/* The project site. It is linked from the login screen footer, which
                 is a page a signed-in user never sees again -- so from inside the
                 app there was no way back to it. */}
-            <MenuItem icon={<Globe size={16} />} label={t("About ihasmail")} href="https://ihasmail.org" external />
+            <MenuItem icon={<Globe size={16} />} label={t("About {app}", { app: appName })} href="https://ihasmail.org" external />
             <MenuItem icon={<Settings size={16} />} label={t("Settings")} onClick={() => navigate("/settings")} />
             {/* Only for an account whose Stalwart role manages other accounts.
                 Nobody else is shown an entry that would open onto refusals. */}
@@ -204,15 +311,39 @@ export function AppShell({ children }: { children: ReactNode }) {
             )}
             <MenuItem icon={<RefreshCw size={16} />} label={t("Refresh")} onClick={() => window.location.reload()} />
             <MenuItem icon={<LogOut size={16} />} label={t("Sign out")} onClick={() => void logout()} />
+            {signedIn.length > 1 && (
+              <MenuItem icon={<LogOut size={16} />} label={t("Sign out of all accounts")} onClick={() => void useSession.getState().logoutAll()} />
+            )}
           </Popover>
+          <AddAccountDialog open={addingAccount} onClose={() => setAddingAccount(false)} />
         </div>
       </header>
 
       <div
-        className={`app-body ${collapsed && !isMobile ? "collapsed" : ""} ${liveSidebarWidth != null ? "resizing" : ""}`}
+        className={`app-body ${!isMobile ? "has-rail" : ""} ${collapsed && !isMobile ? "collapsed" : ""} ${collapsed && !isMobile && section !== "mail" && section !== "search" ? "sidebar-hidden" : ""} ${liveSidebarWidth != null ? "resizing" : ""}`}
         style={shownSidebarWidth != null && !isMobile ? ({ "--sidebar-w": `${shownSidebarWidth}px` } as React.CSSProperties) : undefined}
       >
         <div className={`drawer-backdrop ${drawer ? "open" : ""}`} onClick={() => setDrawer(false)} />
+        {!isMobile && (
+          <nav className="app-rail" aria-label={t("Go to")}>
+            <RailLink href="/mail" icon={<Mail size={20} />} label={t("Mail")} active={section === "mail" || section === "search"} badge={inboxUnread} />
+            <RailLink href="/calendar" icon={<Calendar size={20} />} label={t("Calendar")} active={section === "calendar"} />
+            <RailLink href="/contacts" icon={<Users size={20} />} label={t("Contacts")} active={section === "contacts"} />
+            <RailLink href="/files" icon={<FolderOpen size={20} />} label={t("Files")} active={section === "files"} />
+            <span className="app-rail-spacer" />
+            <RailLink href="/settings" icon={<Settings size={20} />} label={t("Settings")} active={section === "settings"} />
+            <button
+              type="button"
+              className="rail-link rail-toggle"
+              aria-label={collapsed ? t("Show folder list") : t("Hide folder list")}
+              title={collapsed ? t("Show folder list") : t("Hide folder list")}
+              aria-expanded={!collapsed}
+              onClick={() => update({ sidebarCollapsed: !collapsed })}
+            >
+              {collapsed ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
+            </button>
+          </nav>
+        )}
         <aside ref={sidebarRef} className={`sidebar ${drawer ? "open" : ""}`}>
           {/*
             The way back out.
@@ -252,19 +383,21 @@ export function AppShell({ children }: { children: ReactNode }) {
           </button>
           <div className="sidebar-scroll">
             {(section === "mail" || section === "search") && <MailboxTree />}
-            {section === "calendar" && <CalendarSidebar />}
-            {section === "contacts" && <ContactsSidebar />}
-            {section === "files" && <FilesTree />}
+            <Suspense fallback={null}>
+              {section === "calendar" && <CalendarSidebar />}
+              {section === "contacts" && <ContactsSidebar />}
+              {section === "files" && <FilesTree />}
+            </Suspense>
             {section === "settings" && <div className="nav-section"><span>{t("Settings")}</span></div>}
             {section === "admin" && <AdminNav />}
           </div>
           {(section === "mail" || section === "search") && <QuotaBar />}
-          <nav className="module-bar" aria-label={t("Go to")}>
+          {isMobile && <nav className="module-bar" aria-label={t("Go to")}>
             <ModuleLink href="/mail" icon={<Mail size={20} />} label={t("Mail")} active={section === "mail" || section === "search"} />
             <ModuleLink href="/calendar" icon={<Calendar size={20} />} label={t("Calendar")} active={section === "calendar"} />
             <ModuleLink href="/contacts" icon={<Users size={20} />} label={t("Contacts")} active={section === "contacts"} />
             <ModuleLink href="/files" icon={<FolderOpen size={20} />} label={t("Files")} active={section === "files"} />
-          </nav>
+          </nav>}
         </aside>
         {/* Not on a phone, where the sidebar is a drawer over the page, and not
             while collapsed to icons, where there is no width to choose. */}
@@ -349,6 +482,16 @@ export function AppShell({ children }: { children: ReactNode }) {
   );
 }
 
+/** The app rail down the left edge, which replaces the module bar on a wide screen. */
+function RailLink({ href, icon, label, active, badge = 0 }: { href: string; icon: ReactNode; label: string; active: boolean; badge?: number }) {
+  return (
+    <Link href={href} className={`rail-link ${active ? "active" : ""}`} title={label} aria-label={label} aria-current={active ? "page" : undefined}>
+      {icon}
+      {badge > 0 && <span className="rail-badge">{badge > 999 ? "999+" : badge}</span>}
+    </Link>
+  );
+}
+
 /** Outlook-style module switcher at the bottom of the folder pane. */
 function ModuleLink({ href, icon, label, active }: { href: string; icon: ReactNode; label: string; active: boolean }) {
   return (
@@ -399,7 +542,7 @@ function ThemeToggle() {
   const prefersDark = Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches);
   const next = toggleTarget({ palette: settings.palette, mode: settings.mode }, prefersDark);
   // Name where it is going, and by the palette when the palette is changing --
-  // going back to ihasmail's own colours is not the same as "dark mode".
+  // going back to ihasmail's own colors is not the same as "dark mode".
   // The palette never changes now, so the label is only ever the side.
   const label = next.mode === "light" ? t("light mode") : t("dark mode");
   return (

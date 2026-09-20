@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
+import { bodyLimit } from "hono/body-limit";
 import { compress } from "hono/compress";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -8,10 +9,12 @@ import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import { attach as pushAttach, attachRelay as pushAttachRelay, prepare as pushPrepare, receive as pushReceive, pushStatus } from "./push.js";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { config } from "./config.js";
+import { fetchPermissions } from "./permissionSchema.js";
 import { administrationAllowed, gateAdministration, grantsAdministration } from "./adminGate.js";
-import { SessionStore, type SessionBackend, type LiveSession } from "./sessions.js";
+import { SessionStore, accountKey, type SessionBackend, type LiveSession } from "./sessions.js";
 import { RateLimiter } from "./ratelimit.js";
-import { resolveClientIp } from "./clientip.js";
+import { rateLimitKey, resolveClientIp } from "./clientip.js";
+import { safeEqual } from "./crypto.js";
 import {
   type AccountInfo,
   UpstreamError,
@@ -23,12 +26,13 @@ import {
   getAccountInfo,
   getUpstreamSession,
   upstreamFor,
+  adminUrlFor,
   localizeSession,
 } from "./upstream.js";
 import {
   AccountError,
-  assertEnrolmentCode,
-  beginOtpEnrolment,
+  assertEnrollmentCode,
+  beginOtpEnrollment,
   changePassword,
   createAppPassword,
   disableOtp,
@@ -39,6 +43,7 @@ import {
 import { imageProxyHandler } from "./imageproxy.js";
 import { icsProxyHandler } from "./icsproxy.js";
 import { staticHandler } from "./static.js";
+import { ADD_REFUSED, MAX_ACCOUNTS, parseOthers, serializeOthers } from "./accounts.js";
 
 type Env = { Variables: { session: LiveSession } };
 
@@ -207,6 +212,22 @@ const csrfGuard: MiddlewareHandler = async (c, next) => {
   await next();
 };
 
+/**
+ * The largest body an API route that reads JSON will take.
+ *
+ * Hono reads a JSON body whole, and before this nothing bounded it: a few
+ * unauthenticated sign-in attempts carrying hundreds of megabytes each could
+ * run the process out of memory, and a restart signs everybody out. What
+ * these routes actually receive is a username and password, or a code.
+ *
+ * JMAP and uploads carry real payloads and bound themselves as they stream;
+ * the push callback has its own limit ahead of this one.
+ */
+const MAX_SMALL_BODY = 64 * 1024;
+const LARGE_BODY_ROUTE = /\/api\/(jmap$|upload\/)/;
+const limitSmallBody = bodyLimit({ maxSize: MAX_SMALL_BODY, onError: (c) => c.json({ error: "too_large" }, 413) });
+const smallBodies: MiddlewareHandler = (c, next) => (LARGE_BODY_ROUTE.test(c.req.path) ? next() : limitSmallBody(c, next));
+
 const requireSession: MiddlewareHandler<Env> = async (c, next) => {
   const cookie = getCookie(c, config.cookieName);
   const session = sessions.resolve(cookie);
@@ -243,6 +264,132 @@ function setSessionCookie(c: Context, value: string, remember: boolean) {
   });
 }
 
+/*
+ * The other signed-in accounts, beside the one in front. See
+ * accounts.ts. Kept across a browser restart only when every account in it
+ * would be.
+ */
+const OTHERS_COOKIE = `${config.cookieName}_more`;
+
+function setOthersCookie(c: Context, cookies: string[]) {
+  if (!cookies.length) {
+    deleteCookie(c, OTHERS_COOKIE, { path: cookiePath });
+    return;
+  }
+  const remember = cookies.every((cookie) => sessions.resolve(cookie)?.remember === true);
+  setCookie(c, OTHERS_COOKIE, serializeOthers(cookies), {
+    httpOnly: true,
+    sameSite: "Lax",
+    secure: isSecureRequest(c),
+    path: cookiePath,
+    ...(remember ? { maxAge: config.sessionRememberTtl } : {}),
+  });
+}
+
+/** The other accounts still signed in, in their order; ended ones are left out. */
+function liveOthers(c: Context): { cookie: string; session: LiveSession }[] {
+  const out: { cookie: string; session: LiveSession }[] = [];
+  for (const cookie of parseOthers(getCookie(c, OTHERS_COOKIE))) {
+    const session = sessions.resolve(cookie);
+    if (session) out.push({ cookie, session });
+  }
+  return out;
+}
+
+/*
+ * What may be asked of a signed-in account that isn't in front.
+ *
+ * Its push subscription has to be registered, verified and renewed through
+ * its own session -- a JMAP push subscription belongs to whoever signs the
+ * request -- and a notification's Archive and Mark read act on its mail. Those
+ * four methods, and for Email/set only changes to keywords and mailboxes: the
+ * browser already holds the session, so this reaches nothing new, but it is
+ * kept to what the notifications need.
+ */
+const OTHER_ACCOUNT_METHODS = new Set(["PushSubscription/get", "PushSubscription/set", "Mailbox/get", "Email/set"]);
+
+export function otherAccountCallAllowed(call: unknown): boolean {
+  if (!Array.isArray(call) || call.length !== 3) return false;
+  const [method, args] = call as [unknown, unknown, unknown];
+  if (typeof method !== "string" || !OTHER_ACCOUNT_METHODS.has(method)) return false;
+  if (typeof args !== "object" || args === null) return false;
+  if (method !== "Email/set") return true;
+  const set = args as { create?: unknown; destroy?: unknown; update?: unknown };
+  if (set.create !== undefined || set.destroy !== undefined) return false;
+  if (typeof set.update !== "object" || set.update === null) return false;
+  return Object.values(set.update as Record<string, unknown>).every(
+    (patch) =>
+      typeof patch === "object" &&
+      patch !== null &&
+      Object.keys(patch).every((k) => k === "keywords" || k === "mailboxIds" || k.startsWith("keywords/") || k.startsWith("mailboxIds/")),
+  );
+}
+
+/** Inbox unread counts of accounts not in front, briefly kept. */
+const UNREAD_CACHE_MS = 60_000;
+const unreadCache = new Map<string, { unread: number | null; at: number }>();
+
+/** The Inbox's unread count for one session's account, or null when it has none. */
+async function inboxUnread(session: LiveSession): Promise<number | null> {
+  const upstream = await getUpstreamSession(session.id, session.authorization, upstreamFor(session.username));
+  const accountId = upstream.primaryAccounts?.["urn:ietf:params:jmap:mail"];
+  if (!accountId) return null;
+  const res = await fetch(absoluteUpstream(upstream.apiUrl, upstream.baseUrl), {
+    method: "POST",
+    headers: { authorization: session.authorization, "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({
+      using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+      methodCalls: [["Mailbox/get", { accountId, ids: null, properties: ["role", "unreadEmails"] }, "0"]],
+    }),
+    signal: AbortSignal.timeout(config.upstreamTimeout),
+  });
+  if (!res.ok) return null;
+  const body = (await res.json()) as { methodResponses?: [string, { list?: { role?: string | null; unreadEmails?: number }[] }, string][] };
+  const inbox = body.methodResponses?.[0]?.[1]?.list?.find((m) => m.role === "inbox");
+  return typeof inbox?.unreadEmails === "number" ? inbox.unreadEmails : null;
+}
+
+/** Whether the account in front may have more beside it, or why not. */
+function addRefusal(c: Context): string | null {
+  if (1 + liveOthers(c).length >= MAX_ACCOUNTS) return "add_full";
+  return null;
+}
+
+/**
+ * A session just signed in to be added beside the one in front. It
+ * comes to the front and the old front joins the others; or, refused, it is
+ * ended and the front stays. Returns the refusal, or null.
+ */
+function joinAccount(c: Context, created: { cookie: string; session: LiveSession }): string | null {
+  const frontCookie = getCookie(c, config.cookieName);
+  const front = sessions.resolve(frontCookie);
+  if (!front || !frontCookie) {
+    // Nobody in front any more: an ordinary sign-in
+    setSessionCookie(c, created.cookie, created.session.remember);
+    return null;
+  }
+  const others = liveOthers(c);
+  const end = (code: string | null) => {
+    sessions.destroy(created.session.id);
+    forgetUpstreamSession(created.session.id);
+    return code;
+  };
+  if (upstreamFor(created.session.username) !== upstreamFor(front.username)) return end("add_other_server");
+  // Already open: that one comes to the front instead of a second copy
+  if (created.session.account === front.account) return end(null);
+  const existing = others.find((o) => o.session.account === created.session.account);
+  if (existing) {
+    end(null);
+    setSessionCookie(c, existing.cookie, existing.session.remember);
+    setOthersCookie(c, [frontCookie, ...others.filter((o) => o !== existing).map((o) => o.cookie)]);
+    return null;
+  }
+  if (1 + others.length >= MAX_ACCOUNTS) return end("add_full");
+  setSessionCookie(c, created.cookie, created.session.remember);
+  setOthersCookie(c, [frontCookie, ...others.map((o) => o.cookie)]);
+  return null;
+}
+
 function upstreamFailure(c: Context, err: unknown) {
   if (err instanceof UpstreamError) {
     return c.json({ error: err.status === 401 ? "invalid_credentials" : "upstream_error", message: err.message }, err.status as 401 | 502);
@@ -267,6 +414,7 @@ export function createApp(basePath = config.basePath): Hono<Env> {
 
   const api = new Hono<Env>();
   api.use("*", csrfGuard);
+  api.use("*", smallBodies);
 
   api.get("/health", (c) => c.json({ ok: true, name: config.appName, version: config.version, push: pushStatus() }));
 
@@ -301,7 +449,14 @@ export function createApp(basePath = config.basePath): Hono<Env> {
   // ---------- Auth ----------
   api.post("/auth/login", async (c) => {
     const ip = clientIp(c);
-    let body: { username?: string; password?: string; totp?: string; remember?: boolean };
+    // What the limits count under: the address, or its /64 for IPv6.
+    const rateIp = rateLimitKey(ip);
+    // The flood ceiling needs nothing from the body, so it goes before reading one.
+    if (!loginFloodLimiter.check(rateIp)) {
+      c.header("Retry-After", String(loginFloodLimiter.retryAfterSeconds(rateIp)));
+      return c.json({ error: "rate_limited", message: "Too many login attempts. Please wait and try again." }, 429);
+    }
+    let body: { username?: string; password?: string; totp?: string; remember?: boolean; add?: boolean };
     try {
       body = await c.req.json();
     } catch {
@@ -316,7 +471,7 @@ export function createApp(basePath = config.basePath): Hono<Env> {
     /*
      * Three checks, answering different questions.
      *
-     * `limitKey` is this username from this address, and `ip` is any username
+     * `limitKey` is this username from this address, and `rateIp` is any username
      * from it -- both guard guessing, and both are given back when the upstream
      * never got as far as judging the password. Refunding only the first would
      * not fix #239: ten retries through an outage would still spend the address
@@ -326,12 +481,8 @@ export function createApp(basePath = config.basePath): Hono<Env> {
      * The flood ceiling is the one that is never refunded, and it is the reason
      * the other two safely can be.
      */
-    const limitKey = `${ip}|${username.toLowerCase()}`;
-    if (!loginFloodLimiter.check(ip)) {
-      c.header("Retry-After", String(loginFloodLimiter.retryAfterSeconds(ip)));
-      return c.json({ error: "rate_limited", message: "Too many login attempts. Please wait and try again." }, 429);
-    }
-    if (!loginLimiter.check(limitKey) || !loginLimiter.check(ip)) {
+    const limitKey = `${rateIp}|${username.toLowerCase()}`;
+    if (!loginLimiter.check(limitKey) || !loginLimiter.check(rateIp)) {
       c.header("Retry-After", String(loginLimiter.retryAfterSeconds(limitKey)));
       return c.json({ error: "rate_limited", message: "Too many login attempts. Please wait and try again." }, 429);
     }
@@ -349,7 +500,7 @@ export function createApp(basePath = config.basePath): Hono<Env> {
         // The credentials were accepted; only the server is too old. Not an
         // attempt worth counting against them.
         loginLimiter.refund(limitKey);
-        loginLimiter.refund(ip);
+        loginLimiter.refund(rateIp);
         return c.json(
           {
             error: "unsupported_server",
@@ -362,11 +513,18 @@ export function createApp(basePath = config.basePath): Hono<Env> {
       loginLimiter.reset(limitKey);
       const { cookie, session } = sessions.create({
         username,
+        account: accountKey(upstreamFor(username), upstream.username || username),
         password: effectivePassword,
         remember: Boolean(body.remember),
         userAgent: c.req.header("user-agent") ?? "",
         ip,
       });
+      // Beside the account in front, when that's what was asked
+      if (body.add && sessions.resolve(getCookie(c, config.cookieName))) {
+        const refused = joinAccount(c, { cookie, session });
+        if (refused) return c.json({ error: refused, message: ADD_REFUSED[refused] }, 403);
+        return c.json({ ok: true, added: true });
+      }
       setSessionCookie(c, cookie, session.remember);
       // Start the account's push subscription now, so it is usually verified
       // by the time the browser opens its stream. See push.ts.
@@ -402,14 +560,14 @@ export function createApp(basePath = config.basePath): Hono<Env> {
         );
       }
       /*
-       * A 401 is a judgement about the password and stays counted. Anything
+       * A 401 is a judgment about the password and stays counted. Anything
        * else -- refused, timed out, DNS, TLS -- is the upstream failing to
        * answer, which says nothing about the credentials and must not spend
        * somebody's attempts while they wait for it to come back (#239).
        */
       if (!(err instanceof UpstreamError && err.status === 401)) {
         loginLimiter.refund(limitKey);
-        loginLimiter.refund(ip);
+        loginLimiter.refund(rateIp);
       }
       return upstreamFailure(c, err);
     }
@@ -437,18 +595,129 @@ export function createApp(basePath = config.basePath): Hono<Env> {
       sessions.destroy(session.id);
       forgetUpstreamSession(session.id);
     }
+    // Only this account ends; the next one comes to the front
+    const [next, ...rest] = liveOthers(c);
+    if (next) {
+      setSessionCookie(c, next.cookie, next.session.remember);
+      setOthersCookie(c, rest.map((o) => o.cookie));
+      return c.json({ ok: true, next: true });
+    }
     deleteCookie(c, config.cookieName, { path: cookiePath });
+    deleteCookie(c, OTHERS_COOKIE, { path: cookiePath });
+    return c.json({ ok: true });
+  });
+
+  /* Every account signed in here ends. */
+  api.post("/auth/logout-all", async (c) => {
+    const front = sessions.resolve(getCookie(c, config.cookieName));
+    for (const session of [front, ...liveOthers(c).map((o) => o.session)]) {
+      if (!session) continue;
+      sessions.destroy(session.id);
+      forgetUpstreamSession(session.id);
+    }
+    deleteCookie(c, config.cookieName, { path: cookiePath });
+    deleteCookie(c, OTHERS_COOKIE, { path: cookiePath });
+    return c.json({ ok: true });
+  });
+
+  /* The accounts signed in here, the one in front first, and whether one more may be added. */
+  api.get("/auth/accounts", requireSession, async (c) => {
+    const front = c.get("session");
+    const others = liveOthers(c);
+    if (others.length !== parseOthers(getCookie(c, OTHERS_COOKIE)).length) {
+      setOthersCookie(c, others.map((o) => o.cookie));
+    }
+    const canAdd = addRefusal(c) === null;
+    // Each one's mail account, which its push subscription and
+    // a notification's buttons need
+    const accounts = await Promise.all(
+      [front, ...others.map((o) => o.session)].map(async (s, i) => {
+        let mailAccountId: string | null = null;
+        try {
+          const upstream = await getUpstreamSession(s.id, s.authorization, upstreamFor(s.username));
+          mailAccountId = upstream.primaryAccounts?.["urn:ietf:params:jmap:mail"] ?? null;
+        } catch {
+          /* unknown for now: push for it waits for the next start */
+        }
+        return { id: s.id, username: s.username, front: i === 0, mailAccountId };
+      }),
+    );
+    return c.json({ accounts, canAdd, max: MAX_ACCOUNTS });
+  });
+
+  /*
+   * The Inbox unread count of each account not in front, asked
+   * through that account's own session, so the menu can say where new mail
+   * is. A minute's cache per account: the web app asks every few minutes, and
+   * several tabs may ask at once.
+   */
+  api.get("/auth/accounts/unread", requireSession, async (c) => {
+    const answers = await Promise.all(
+      liveOthers(c).map(async ({ session }) => {
+        const cached = unreadCache.get(session.id);
+        if (cached && Date.now() - cached.at < UNREAD_CACHE_MS) return { id: session.id, unread: cached.unread };
+        try {
+          const unread = await inboxUnread(session);
+          unreadCache.set(session.id, { unread, at: Date.now() });
+          return { id: session.id, unread };
+        } catch {
+          return { id: session.id, unread: null };
+        }
+      }),
+    );
+    return c.json({ accounts: answers });
+  });
+
+  /* A narrow JMAP route to a signed-in account not in front; see OTHER_ACCOUNT_METHODS. */
+  api.post("/auth/accounts/:id/jmap", requireSession, async (c) => {
+    const other = liveOthers(c).find((o) => o.session.id === c.req.param("id"));
+    if (!other) return c.json({ error: "not_found" }, 404);
+    let body: { using?: unknown; methodCalls?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "bad_request" }, 400);
+    }
+    const calls = body.methodCalls;
+    if (!Array.isArray(calls) || calls.length === 0 || calls.length > 16 || !calls.every(otherAccountCallAllowed)) {
+      return c.json({ error: "forbidden", message: "Only push subscriptions, mailboxes and marking mail can be reached in another account." }, 403);
+    }
+    const using = Array.isArray(body.using) ? body.using.filter((u): u is string => typeof u === "string") : [];
+    const session = other.session;
+    try {
+      const upstream = await getUpstreamSession(session.id, session.authorization, upstreamFor(session.username));
+      const res = await fetch(absoluteUpstream(upstream.apiUrl, upstream.baseUrl), {
+        method: "POST",
+        headers: { authorization: session.authorization, "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ using, methodCalls: calls }),
+        signal: AbortSignal.timeout(config.upstreamTimeout),
+      });
+      if (res.status === 401 || res.status === 403) return c.json({ error: "unauthenticated" }, 401);
+      return c.json(await res.json(), res.ok ? 200 : 502);
+    } catch (err) {
+      return upstreamFailure(c, err);
+    }
+  });
+
+  /* Bring another signed-in account to the front. */
+  api.post("/auth/accounts/:id/front", requireSession, async (c) => {
+    const frontCookie = getCookie(c, config.cookieName)!;
+    const others = liveOthers(c);
+    const chosen = others.find((o) => o.session.id === c.req.param("id"));
+    if (!chosen) return c.json({ error: "not_found" }, 404);
+    setSessionCookie(c, chosen.cookie, chosen.session.remember);
+    setOthersCookie(c, [frontCookie, ...others.filter((o) => o !== chosen).map((o) => o.cookie)]);
     return c.json({ ok: true });
   });
 
   api.get("/auth/sessions", requireSession, (c) => {
     const session = c.get("session");
-    return c.json({ current: session.id, sessions: sessions.listForUser(session.username) });
+    return c.json({ current: session.id, sessions: sessions.listForUser(session.account) });
   });
 
   api.post("/auth/sessions/revoke-others", requireSession, (c) => {
     const session = c.get("session");
-    const n = sessions.destroyAllForUser(session.username, session.id);
+    const n = sessions.destroyAllForUser(session.account, session.id);
     return c.json({ revoked: n });
   });
 
@@ -476,8 +745,8 @@ export function createApp(basePath = config.basePath): Hono<Env> {
   };
 
   /** Guard the endpoints that check a password against brute-forcing. */
-  const guarded = (c: Context<Env>): Response | null => {
-    const key = `account|${c.get("session").username.toLowerCase()}`;
+  const guarded = (c: Context<Env>, scope = "account"): Response | null => {
+    const key = `${scope}|${c.get("session").username.toLowerCase()}`;
     if (accountLimiter.check(key)) return null;
     c.header("Retry-After", String(accountLimiter.retryAfterSeconds(key)));
     return c.json({ error: "rate_limited", message: "Too many attempts. Please wait and try again." }, 429);
@@ -515,7 +784,7 @@ export function createApp(basePath = config.basePath): Hono<Env> {
     const otpCode = body.otpCode?.trim();
     sessions.reseal(getCookie(c, config.cookieName), otpCode ? `${next}$${otpCode}` : next);
     forgetUpstreamSession(session.id);
-    const revoked = sessions.destroyAllForUser(session.username, session.id);
+    const revoked = sessions.destroyAllForUser(session.account, session.id);
     return c.json({ ok: true, revokedSessions: revoked });
   });
 
@@ -529,12 +798,26 @@ export function createApp(basePath = config.basePath): Hono<Env> {
     }
   });
 
+  /*
+   * An app password is a credential that outlives this session, a password
+   * change and a sign-out -- so minting one asks for the account password, as
+   * changing the password does. Otherwise a session left open on somebody
+   * else's machine is enough to take a permanent key away from it.
+   */
   api.post("/account/app-passwords", requireSession, async (c) => {
+    // A budget of its own: guessing here never reaches Stalwart (see confirmsPassword).
+    const limited = guarded(c, "app-password");
+    if (limited) return limited;
     const session = c.get("session");
-    const body = await readJson<{ description?: string }>(c);
+    const body = await readJson<{ description?: string; current?: string }>(c);
     if (!body) return c.json({ error: "bad_request" }, 400);
     const description = (body.description ?? "").trim().slice(0, 120);
     if (!description) return c.json({ error: "missing_fields", message: "Give the app password a name." }, 400);
+    const current = body.current ?? "";
+    if (!current || current.length > 1024) return c.json({ error: "missing_fields", message: "Enter your current password." }, 400);
+    if (!(await confirmsPassword(session, current))) {
+      return c.json({ error: "invalid_credentials", message: "That password is not correct." }, 403);
+    }
     try {
       return c.json(await createAppPassword(await accountCtx(c), { description }));
     } catch (err) {
@@ -557,7 +840,7 @@ export function createApp(basePath = config.basePath): Hono<Env> {
   api.post("/account/2fa/begin", requireSession, async (c) => {
     try {
       // Nothing is stored yet; the client hands the URL back to confirm.
-      return c.json(beginOtpEnrolment(await accountCtx(c)));
+      return c.json(beginOtpEnrollment(await accountCtx(c)));
     } catch (err) {
       return accountFailure(c, err);
     }
@@ -582,7 +865,7 @@ export function createApp(basePath = config.basePath): Hono<Env> {
      * the moment 2FA is enabled this session can no longer authenticate at all.
      */
     try {
-      assertEnrolmentCode(body.url, code);
+      assertEnrollmentCode(body.url, code);
     } catch (err) {
       return accountFailure(c, err);
     }
@@ -609,7 +892,7 @@ export function createApp(basePath = config.basePath): Hono<Env> {
       if (sessionKept) forgetUpstreamSession(session.id);
     }
     // Other sessions still hold the bare password and will be refused.
-    const revoked = sessions.destroyAllForUser(session.username, session.id);
+    const revoked = sessions.destroyAllForUser(session.account, session.id);
     return c.json({ ok: true, sessionKept, revokedSessions: revoked });
   });
 
@@ -646,12 +929,27 @@ export function createApp(basePath = config.basePath): Hono<Env> {
      */
     let body: ReadableStream<Uint8Array> | string | null = c.req.raw.body;
     if (!administrationAllowed(config.administration, session.remember)) {
+      const held = gatedReads.get(session.id) ?? 0;
+      if (held >= MAX_GATED_PER_SESSION) {
+        c.header("Retry-After", "1");
+        return c.json({ error: "rate_limited" }, 429);
+      }
+      gatedReads.set(session.id, held + 1);
       let raw: string;
       try {
+        if (Number(c.req.header("content-length") ?? "0") > MAX_GATED_REQUEST) return c.json({ error: "too_large" }, 413);
         // Counted as it arrives: a chunked body carries no length to refuse up front.
-        raw = c.req.raw.body ? await new Response(c.req.raw.body.pipeThrough(byteCap(MAX_GATED_REQUEST))).text() : "";
-      } catch {
+        raw = c.req.raw.body ? await readGated(c.req.raw.body) : "";
+      } catch (err) {
+        if (err instanceof GatedBudgetError) {
+          c.header("Retry-After", "1");
+          return c.json({ error: "busy" }, 503);
+        }
         return c.json({ error: "too_large" }, 413);
+      } finally {
+        const left = (gatedReads.get(session.id) ?? 1) - 1;
+        if (left > 0) gatedReads.set(session.id, left);
+        else gatedReads.delete(session.id);
       }
       const gate = gateAdministration(raw);
       if (!gate.ok) {
@@ -682,6 +980,30 @@ export function createApp(basePath = config.basePath): Hono<Env> {
         return c.json({ error: "unauthenticated" }, 401);
       }
       return passthrough(res);
+    } catch (err) {
+      return upstreamFailure(c, err);
+    }
+  });
+
+  // ---------- Administration: Stalwart's permission list ----------
+  /*
+   * The one administration read that is not a JMAP call: the labeled list of
+   * permissions from Stalwart's schema, for the Roles picker. Behind the same
+   * two gates as the registry methods, so a session that may not administer
+   * learns nothing from it.
+   */
+  api.get("/admin/permissions", requireSession, apiRateLimited, async (c) => {
+    const session = c.get("session");
+    if (!administrationAllowed(config.administration, session.remember)) {
+      return config.administration
+        ? c.json({ error: "administration_needs_own_device" }, 403)
+        : c.json({ error: "administration_disabled" }, 403);
+    }
+    try {
+      const upstream = await getUpstreamSession(session.id, session.authorization, upstreamFor(session.username));
+      const permissions = await fetchPermissions(session.authorization, upstream.baseUrl);
+      if (!permissions) return c.json({ error: "upstream_error" }, 502);
+      return c.json({ permissions });
     } catch (err) {
       return upstreamFailure(c, err);
     }
@@ -725,23 +1047,37 @@ export function createApp(basePath = config.basePath): Hono<Env> {
     try {
       const upstream = await getUpstreamSession(session.id, session.authorization, upstreamFor(session.username));
       const url = absoluteUpstream(expandTemplate(upstream.downloadUrl, { accountId, blobId, name, type: accept }), upstream.baseUrl);
+      // A PDF viewer or a video element asks for pieces; pass that on. A server
+      // that ignores it answers with the whole file, as it did before.
+      const range = c.req.header("range");
       const res = await fetch(url, {
         // Ask for the bytes as they are. undici would otherwise negotiate gzip
         // on our behalf and hand back a decompressed body whose content-length
         // header still describes the compressed one -- see forwardedContentLength.
-        headers: { authorization: session.authorization, "accept-encoding": "identity" },
+        headers: { authorization: session.authorization, "accept-encoding": "identity", ...(range && /^bytes=[\d,\s-]+$/.test(range) ? { range } : {}) },
         signal: AbortSignal.timeout(Math.max(config.upstreamTimeout, 5 * 60_000)),
       });
+      if (res.status === 416) return c.body(null, 416);
       if (!res.ok) return c.json({ error: "not_found" }, res.status === 404 ? 404 : 502);
       const headers = new Headers();
       const type = sanitizeContentType(res.headers.get("content-type") ?? accept);
       headers.set("Content-Type", type);
       const cl = forwardedContentLength(res.headers);
       if (cl) headers.set("Content-Length", cl);
+      const partial = res.status === 206 && res.headers.get("content-range");
+      if (partial) headers.set("Content-Range", partial);
+      /*
+       * Said here because Stalwart does not say it. It honors a single byte
+       * range but sends no `Accept-Ranges` (0.16.22, checked live on
+       * 2026-09-16), and Chrome's PDF viewer only reads a file in pieces when
+       * the first response advertises it. A server that ignores a range sends
+       * the whole file, which the browser takes just as well.
+       */
+      headers.set("Accept-Ranges", "bytes");
       const safeInline = inline && isInlineSafe(type);
       headers.set(
         "Content-Disposition",
-        `${safeInline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(name)}`,
+        `${safeInline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(withoutBidiControls(name))}`,
       );
       headers.set("X-Content-Type-Options", "nosniff");
       // Sandbox everything except the browser's built-in PDF viewer (which needs scripts to render).
@@ -760,8 +1096,15 @@ export function createApp(basePath = config.basePath): Hono<Env> {
       } else {
         headers.set("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:");
       }
-      headers.set("Cache-Control", "private, max-age=3600");
-      return new Response(res.body, { status: 200, headers });
+      // Kept out of the browser's disk cache on a device that is not the
+      // person's own: signing out wipes what the app stores, not that.
+      /*
+       * A blob id names its content -- the same id is the same bytes for good
+       * -- so on the reader's own device there is nothing to revalidate. On
+       * anyone else's, nothing is left in the disk cache at all.
+       */
+      headers.set("Cache-Control", session.remember ? "private, max-age=31536000, immutable" : "no-store");
+      return new Response(res.body, { status: partial ? 206 : 200, headers });
     } catch (err) {
       return upstreamFailure(c, err);
     }
@@ -846,6 +1189,43 @@ async function readJson<T>(c: Context): Promise<T | null> {
   }
 }
 
+/**
+ * Is `candidate` the password of the account this session is signed in to?
+ *
+ * Compared with the credential the session holds first, which costs nothing
+ * and tells Stalwart nothing -- its auto-ban counts failures against the
+ * proxy's address, which every user shares. That credential is the password,
+ * with a TOTP code after a `$` when one was given at sign-in. A session that
+ * turning on 2FA moved onto an app password (Stalwart's secrets start
+ * `$app$`) holds something else, and only then is the candidate put to the
+ * server.
+ */
+async function confirmsPassword(session: LiveSession, candidate: string): Promise<boolean> {
+  const decoded = Buffer.from(session.authorization.replace(/^Basic /, ""), "base64").toString("utf8");
+  const held = decoded.slice(decoded.indexOf(":") + 1);
+  if (safeEqual(held, candidate)) return true;
+  const withoutCode = held.replace(/\$\d{6,8}$/, "");
+  if (withoutCode !== held && safeEqual(withoutCode, candidate)) return true;
+  // Holding the password, the comparison above is the answer, and a wrong
+  // guess never reaches the server's auto-ban.
+  if (!held.startsWith("$app$")) return false;
+  try {
+    const authorization = `Basic ${Buffer.from(`${session.username}:${candidate}`, "utf8").toString("base64")}`;
+    await fetchUpstreamSession(authorization, upstreamFor(session.username));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Direction overrides and isolates, which can make `Invoice_\u202Efdp.exe`
+ * read as a PDF in the downloads list. A filename has no use for them.
+ */
+function withoutBidiControls(name: string): string {
+  return name.replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, "");
+}
+
 /** Name the app password after the browser it will live in. */
 function appPasswordName(c: Context): string {
   const ua = c.req.header("user-agent") ?? "";
@@ -865,8 +1245,17 @@ function sessionExtras(session: LiveSession, info: AccountInfo = { locale: null,
       remember: session.remember,
       /** Locale configured for the account in Stalwart's directory, if readable. */
       userLocale: info.locale,
-      /** What the upstream server would tell us about itself. */
-      server: { edition: info.edition },
+      /**
+       * What the upstream server would tell us about itself, and -- for a
+       * session that may administer -- where the operator says its own
+       * administration is.
+       */
+      server: {
+        edition: info.edition,
+        adminUrl: administrationAllowed(config.administration, session.remember) ? adminUrlFor(session.username, info.adminUrl ?? null) : null,
+        /** SHOW_ENTERPRISE_NOTICES: say "Enterprise feature" on Enterprise too, as the demo does. */
+        enterpriseNotices: config.showEnterpriseNotices,
+      },
       /**
        * Whether this session may administer: the installation offers it
        * (ADMINISTRATION) and the person signed in on a device marked as their own.
@@ -896,9 +1285,50 @@ function sessionExtras(session: LiveSession, info: AccountInfo = { locale: null,
  */
 /**
  * The largest JMAP request read into memory for the administration check.
- * Stalwart's own default `maxSizeRequest` is 10 MB; uploads never come this way.
+ *
+ * Only sessions that may not administer come this way, and what the client
+ * sends is small: attachments and pasted images go through `/upload`, and the
+ * composer turns inline images into uploads before a draft is saved. Stalwart
+ * would take up to its `maxSizeRequest` (10 MB by default), but a request is
+ * held here as a string, parsed and serialized again, so each one costs
+ * several times its size; 4 MB is far past anything the client sends.
  */
-const MAX_GATED_REQUEST = 16 * 1024 * 1024;
+const MAX_GATED_REQUEST = 4 * 1024 * 1024;
+/**
+ * How many checked requests one session may have in flight at once. Matches
+ * the `maxConcurrentRequests` Stalwart advertises by default, which the client
+ * already stays within.
+ */
+const MAX_GATED_PER_SESSION = 4;
+/**
+ * The bytes all checked requests together may hold at once. Counted as they
+ * arrive rather than reserved up front, so a slow body that has sent little
+ * holds little, and a burst of large ones is turned away with a 503 instead of
+ * taking the process down.
+ */
+const GATED_BUDGET = 32 * 1024 * 1024;
+const gatedReads = new Map<string, number>();
+let gatedBytes = 0;
+
+class GatedBudgetError extends Error {}
+
+async function readGated(stream: ReadableStream<Uint8Array>): Promise<string> {
+  let mine = 0;
+  const counted = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      mine += chunk.byteLength;
+      gatedBytes += chunk.byteLength;
+      if (mine > MAX_GATED_REQUEST) controller.error(new Error("request too large"));
+      else if (gatedBytes > GATED_BUDGET) controller.error(new GatedBudgetError("gated read budget spent"));
+      else controller.enqueue(chunk);
+    },
+  });
+  try {
+    return await new Response(stream.pipeThrough(counted)).text();
+  } finally {
+    gatedBytes -= mine;
+  }
+}
 
 const PASSTHROUGH_HEADERS = new Set(["content-type", "content-disposition", "content-language", "etag", "last-modified", "retry-after"]);
 
@@ -915,7 +1345,7 @@ const PASSTHROUGH_HEADERS = new Set(["content-type", "content-disposition", "con
  * small IncomingMessage/ServerResponse pair.
  *
  * Returns a Response Hono treats as already sent: the raw bindings are
- * written to directly, and the returned value is never serialised.
+ * written to directly, and the returned value is never serialized.
  */
 const SSE_HEADERS = {
   "content-type": "text/event-stream",

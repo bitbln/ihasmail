@@ -18,17 +18,168 @@ const VERSION = "ihasmail-v2";
  * eventually would.
  */
 const BASE = new URL("./", self.location).pathname.replace(/\/$/, "");
-const SHELL = [`${BASE}/`, `${BASE}/manifest.webmanifest`, `${BASE}/img/logo.png`, `${BASE}/img/icon-192.png`, `${BASE}/favicon.ico`];
+const SHELL = [`${BASE}/manifest.webmanifest`, `${BASE}/img/logo.png`, `${BASE}/img/icon-192.png`, `${BASE}/favicon.ico`];
+
+/*
+ * Only the app page may be kept as the app page.
+ *
+ * The mount's root is not always the app: demo.ihasmail.com puts its landing
+ * page there, and a front door of any kind can. The worker used to cache
+ * whatever `/` returned at install and whatever HTML a navigation returned,
+ * and since app routes are answered from that copy first, a demo visitor who
+ * came back got the landing page on every route, for good. The app page is
+ * recognised by the asset list the build writes into it.
+ */
+const APP_PAGE_MARKER = 'id="ihasmail-assets"';
+const isAppPage = (html) => typeof html === "string" && html.includes(APP_PAGE_MARKER);
+
+/*
+ * The routes the app itself owns (App.tsx). Only these are answered from the
+ * kept page; anything else under the mount -- the root, a landing or farewell
+ * page in front of the app, a file -- goes to the network as it always did.
+ */
+const APP_ROUTE = /^\/(mail|search|contacts|calendar|files|settings|admin|login)(\/|$)/;
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil(
+    caches.open(VERSION)
+      .then((c) => c.addAll(SHELL))
+      .then(() => fetch(`${BASE}/mail`, { credentials: "same-origin" }).then((res) => (res.ok ? refreshShell(res) : undefined)).catch(() => {}))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k)))).then(() => self.clients.claim())
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k))))
+      .then(() => dropForeignShell())
+      .then(() => tidy())
+      .catch(() => {})
+      .then(() => self.clients.claim())
   );
 });
+
+/*
+ * Keeping the cache to what the current build uses.
+ *
+ * Build assets are cached on first use and their names change with every
+ * build, and nothing used to take them out again: every deploy's chunks stayed
+ * in the browser for good. Worse, whatever the server answered was kept -- a
+ * 404 for a chunk asked for while a deploy was changing over became that
+ * chunk, from then on, in that browser.
+ *
+ * The rule now: only a successful response is cached, and whenever the app
+ * page changes, the assets it no longer names are dropped. A lazily loaded
+ * chunk the page does not name is dropped too, and fetched again the next time
+ * it is wanted -- a hash that did not change is still on the server.
+ *
+ * The cache name stays as it is. The same cache carries what the worker leaves
+ * for a tab to collect -- a push verification, a share, the facts it notifies
+ * from -- and a new name would throw those away along with the rubbish.
+ */
+const ASSETS = `${BASE}/assets/`;
+const SHELL_KEY = `${BASE}/`;
+
+function assetsNamedIn(html) {
+  const out = new Set();
+  for (const m of html.matchAll(/["']([^"']*\/assets\/[^"']+)["']/g)) {
+    try {
+      out.add(new URL(m[1], self.location).pathname);
+    } catch {
+      /* not a URL */
+    }
+  }
+  return out;
+}
+
+/**
+ * Drop failed responses, and assets the cached app page does not name. `also`
+ * is a page whose assets are kept as well: the one just replaced, which a tab
+ * opened from the kept copy may still be running.
+ */
+async function tidy(also = "") {
+  const cache = await caches.open(VERSION);
+  const shell = await cache.match(SHELL_KEY);
+  // Without a page to go by, which assets are current is unknown; keep them.
+  const keep = shell ? assetsNamedIn(await shell.text()) : null;
+  if (keep) for (const path of assetsNamedIn(also)) keep.add(path);
+  for (const req of await cache.keys()) {
+    const path = new URL(req.url).pathname;
+    if (path.startsWith(ASSETS)) {
+      if (keep && !keep.has(path)) {
+        await cache.delete(req);
+        continue;
+      }
+    }
+    const res = await cache.match(req);
+    if (res && !res.ok) await cache.delete(req);
+  }
+}
+
+/** A kept page that is not the app page -- left by an earlier worker -- is thrown away. */
+async function dropForeignShell() {
+  const cache = await caches.open(VERSION);
+  const kept = await cache.match(SHELL_KEY);
+  if (kept && !isAppPage(await kept.text())) await cache.delete(SHELL_KEY);
+}
+
+/** Keep the offline copy of the app page current, tidy when it changes, and fill in what it lists. */
+async function refreshShell(res) {
+  const html = await res.text();
+  if (!isAppPage(html)) return;
+  const cache = await caches.open(VERSION);
+  const prev = await cache.match(SHELL_KEY);
+  const prevHtml = prev ? await prev.text() : "";
+  if (prevHtml !== html) {
+    await cache.put(SHELL_KEY, new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } }));
+    await tidy(prevHtml);
+  }
+  await precache(html);
+}
+
+/*
+ * Fetching the rest of the build before it is asked for.
+ *
+ * The app page lists every file of its build (see the asset-list plugin in
+ * vite.config.ts). Without this, the first time after a deploy that a reader
+ * opened the composer, settings or a viewer, it waited on the server for the
+ * code -- on a distant link, a visible pause. Now those files are fetched
+ * quietly once a page names them, a few at a time, and only those not held
+ * already; a load cut short is carried on at the next navigation, which calls
+ * this again. Language catalogs are left to be cached when used, and nothing
+ * is fetched ahead when the reader has asked the browser to save data.
+ */
+const PRECACHE_PARALLEL = 3;
+
+function precacheList(html) {
+  const m = html.match(/<script type="application\/json" id="ihasmail-assets">([^<]*)<\/script>/);
+  if (!m) return [];
+  try {
+    const list = JSON.parse(m[1]).precache;
+    return Array.isArray(list) ? list.filter((p) => typeof p === "string" && p.startsWith(ASSETS)) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function precache(html) {
+  if (self.navigator.connection && self.navigator.connection.saveData) return;
+  const cache = await caches.open(VERSION);
+  const wanted = [];
+  for (const path of precacheList(html)) if (!(await cache.match(path))) wanted.push(path);
+  const next = async () => {
+    for (let path = wanted.shift(); path; path = wanted.shift()) {
+      try {
+        const res = await fetch(path, { credentials: "same-origin" });
+        if (res.ok) await cache.put(path, res);
+      } catch {
+        /* offline, or a deploy changing over; the next navigation tries again */
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: PRECACHE_PARALLEL }, next));
+}
 
 /*
  * Where a share from the operating system is left for a tab to collect.
@@ -103,21 +254,52 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith(`${BASE}/api/`)) return;
 
-  // Hashed build assets: cache-first.
-  if (url.pathname.startsWith(`${BASE}/assets/`)) {
+  // Hashed build assets: cache-first, and only what actually arrived.
+  if (url.pathname.startsWith(ASSETS)) {
     event.respondWith(
       caches.match(req).then((hit) => hit || fetch(req).then((res) => {
-        const copy = res.clone();
-        caches.open(VERSION).then((c) => c.put(req, copy));
+        if (res.ok && res.type === "basic") {
+          const copy = res.clone();
+          event.waitUntil(caches.open(VERSION).then((c) => c.put(req, copy)).catch(() => {}));
+        }
         return res;
       }))
     );
     return;
   }
 
-  // Navigations & everything else: network-first, fall back to cached shell.
+  /*
+   * Navigations: the kept app page at once, and the network's behind it.
+   *
+   * Every route in the app is the same page, and waiting on the server for it
+   * cost a full round trip before anything could start -- the longest single
+   * wait on a distant link. So a route is answered from the kept copy when
+   * there is one, and the fresh page is fetched alongside to replace it for
+   * next time. A page that is a build behind is caught the way it always was:
+   * the version check reloads it (lib/sw/staleBuild.ts), and the assets it
+   * names are kept for one more build so it can run until then.
+   *
+   * Only the app's own routes (APP_ROUTE). The root, a page in front of the
+   * app, and a file opened in a tab of its own go to the network as before. So
+   * does the first visit, which has no copy yet.
+   */
   if (req.mode === "navigate") {
-    event.respondWith(fetch(req).catch(() => caches.match(`${BASE}/`)));
+    const network = fetch(req).then((res) => {
+      // Every route is the same app page; a fresh one replaces the offline copy.
+      if (res.ok && (res.headers.get("content-type") || "").startsWith("text/html")) {
+        event.waitUntil(refreshShell(res.clone()).catch(() => {}));
+      }
+      return res;
+    });
+    const appRoute = APP_ROUTE.test(url.pathname.slice(BASE.length));
+    event.respondWith((async () => {
+      const kept = appRoute ? await caches.match(SHELL_KEY) : undefined;
+      if (kept) {
+        event.waitUntil(network.catch(() => {}));
+        return kept;
+      }
+      return network.catch(() => caches.match(SHELL_KEY));
+    })());
     return;
   }
   event.respondWith(fetch(req).catch(() => caches.match(req)));
@@ -202,8 +384,11 @@ async function readFacts() {
  * rather than swallowed. A tap that silently does nothing is the failure worth
  * avoiding here: the reader has already put the phone down.
  */
-async function jmap(methodCalls) {
-  const res = await fetch(`${BASE}/api/jmap`, {
+async function jmap(methodCalls, sessionId) {
+  // An account not in front is reached through its own session,
+  // on the webmail server's narrow route for it
+  const path = sessionId ? `${BASE}/api/auth/accounts/${encodeURIComponent(sessionId)}/jmap` : `${BASE}/api/jmap`;
+  const res = await fetch(path, {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json", accept: "application/json", "x-requested-with": "ihasmail" },
@@ -273,6 +458,22 @@ self.addEventListener("push", (event) => {
   const emails = (data && data["@type"] === "EmailPush" && Array.isArray(data.emails)) ? data.emails : [];
   event.waitUntil((async () => {
     const facts = await readFacts();
+    /*
+     * Whose mail this is. The payload names its account; one that
+     * isn't the account in front is one of the others signed in here, or one
+     * that has been signed out since (said plainly, with nothing to act on).
+     */
+    const forAccount = data && data.accountId && facts && data.accountId !== facts.accountId ? data.accountId : null;
+    const other = forAccount ? (facts.others || []).find((o) => o.accountId === forAccount) || null : null;
+    if (forAccount) return showOtherAccount(emails, facts, other);
+    /*
+     * Someone reading the app already knows. A focused, visible window of this
+     * app gets its new mail from its own event stream, so a notification on
+     * top of it is a second telling of the same thing (#375). Chrome does not
+     * require one while the site is in the foreground.
+     */
+    const windows = await self.clients.matchAll({ type: "window" });
+    if (windows.some((w) => w.focused && w.visibilityState === "visible")) return;
     const strings = facts?.strings ?? { newMail: "New mail", newMessage: "New message", noSubject: "(no subject)" };
     /*
      * Mark the app icon, without claiming a number.
@@ -287,8 +488,10 @@ self.addEventListener("push", (event) => {
     if ("setAppBadge" in self.navigator) await self.navigator.setAppBadge().catch(() => {});
 
     if (!emails.length) {
-      // A StateChange, or a payload too large to carry the message. Say
-      // something true rather than inventing a sender.
+      // A delivery from a server that sends StateChange rather than EmailPush
+      // -- the subscription asks for `EmailDelivery` only, so it is new mail --
+      // or a payload too large to carry the message. Say something true
+      // rather than inventing a sender.
       await self.registration.showNotification(strings.newMail, {
         icon: `${BASE}/img/icon-192.png`, badge: `${BASE}/img/favicon-64.png`, tag: "ihasmail-mail", data: { url: `${BASE}/mail` },
       });
@@ -308,7 +511,7 @@ self.addEventListener("push", (event) => {
         // be drawn.
         actions: email.id ? actionsFor(facts) : [],
         data: {
-          url: email.id ? `${BASE}/mail/inbox/${email.id}` : `${BASE}/mail`,
+          url: messageUrl(facts && facts.inboxId, email),
           id: email.id || null,
           title,
           accountId: facts?.accountId ?? null,
@@ -319,6 +522,70 @@ self.addEventListener("push", (event) => {
     }
   })());
 });
+
+/*
+ * New mail for a signed-in account that isn't in front.
+ *
+ * Shown even while a tab is focused: that tab's own stream only carries the
+ * account in front, so nothing else would tell. The account's address is the
+ * title, so it can't be taken for the front account's mail; the tag carries
+ * the account, so two accounts' notifications don't replace each other; the
+ * buttons act through that account's session; and opening it brings that
+ * account forward before showing the message.
+ */
+async function showOtherAccount(emails, facts, other) {
+  const strings = facts.strings;
+  const icon = `${BASE}/img/icon-192.png?v=${BRAND_V}`;
+  const badge = `${BASE}/img/favicon-64.png?v=${BRAND_V}`;
+  if ("setAppBadge" in self.navigator) await self.navigator.setAppBadge().catch(() => {});
+  if (!other || !emails.length) {
+    // Signed out since, or nothing to show: say only what is true
+    await self.registration.showNotification(other ? other.username : strings.newMail, {
+      body: other ? strings.newMail : undefined,
+      icon, badge,
+      tag: `ihasmail-other-${other ? other.accountId : "unknown"}`,
+      data: { url: other ? openUrl(other, `${BASE}/mail`) : `${BASE}/mail` },
+    });
+    return;
+  }
+  for (const email of emails.slice(0, 5)) {
+    const { title, body, preview } = textOf(email, strings);
+    const at = messageUrl(other.inboxId, email);
+    await self.registration.showNotification(other.username, {
+      body: `${title}: ${body}${preview ? `\n${preview}` : ""}`,
+      icon, badge,
+      tag: `ihasmail-${other.accountId}-${email.id || body}`,
+      actions: email.id ? actionsFor({ ...facts, archiveId: other.archiveId }) : [],
+      data: {
+        url: openUrl(other, at),
+        id: email.id || null,
+        title: other.username,
+        accountId: other.accountId,
+        archiveId: other.archiveId,
+        sessionId: other.sessionId,
+        failed: strings.failed ?? null,
+      },
+    });
+  }
+}
+
+/** Where opening a notification for an account not in front goes: it comes forward first. */
+/**
+ * Where a notification opens. The route names a mailbox by id and then a
+ * conversation, and `m` the message in it. It used to say `inbox` where the id
+ * goes, which the app reads as a folder that no longer exists, so every click
+ * landed on the inbox list with "That folder no longer exists" instead of the
+ * message. Without an inbox id from the briefing, the inbox is the honest
+ * landing.
+ */
+function messageUrl(inboxId, email) {
+  if (!inboxId || !email.id || !email.threadId) return `${BASE}/mail`;
+  return `${BASE}/mail/${encodeURIComponent(inboxId)}/${encodeURIComponent(email.threadId)}?m=${encodeURIComponent(email.id)}`;
+}
+
+function openUrl(other, next) {
+  return `${BASE}/?account=${encodeURIComponent(other.sessionId)}&next=${encodeURIComponent(next)}`;
+}
 
 /*
  * Do what the button said, without opening anything.
@@ -340,7 +607,7 @@ async function runAction(action, data) {
     : { "keywords/$seen": true };
   try {
     if (action === "archive" && !archiveId) throw new Error("no archive mailbox");
-    await jmap([["Email/set", { accountId, update: { [id]: patch } }, "0"]]);
+    await jmap([["Email/set", { accountId, update: { [id]: patch } }, "0"]], data.sessionId || null);
   } catch {
     await self.registration.showNotification(data.title || "ihasmail", {
       body: data.failed || "Could not do that — open ihasmail and try again",

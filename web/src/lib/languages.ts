@@ -14,7 +14,7 @@
  * is the reverse, which is why `uiLanguage` and `locale` are separate settings
  * rather than one.
  *
- * Adding a language means adding its catalogue and then adding it here, in
+ * Adding a language means adding its catalog and then adding it here, in
  * that order. RTL languages — Arabic, Hebrew, Persian — need bidi and layout
  * work well beyond strings, so they are not simply a matter of another entry.
  */
@@ -26,8 +26,8 @@ export interface UiLanguage {
   /**
    * Machine-translated and not yet checked by somebody who speaks it.
    *
-   * Stays true until a native speaker has actually read the catalogue and said
-   * so. It is not a measure of how complete the file is -- a catalogue can be
+   * Stays true until a native speaker has actually read the catalog and said
+   * so. It is not a measure of how complete the file is -- a catalog can be
    * word-for-word finished and still read like a machine wrote it, which is
    * the thing this flag is about. Removing it is a deliberate act by a person,
    * not something a coverage number earns.
@@ -40,24 +40,25 @@ export const UI_LANGUAGES: readonly UiLanguage[] = [
   { tag: "de", name: "Deutsch", beta: true },
   { tag: "es", name: "Español", beta: true },
   { tag: "fr", name: "Français", beta: true },
-  { tag: "nl", name: "Nederlands", beta: true },
+  { tag: "nl", name: "Nederlands" },
   { tag: "pt-BR", name: "Português (Brasil)", beta: true },
   { tag: "ja", name: "日本語", beta: true },
   { tag: "ru", name: "Русский", beta: true },
   { tag: "uk", name: "Українська", beta: true },
   { tag: "zh-Hans", name: "简体中文", beta: true },
+  { tag: "tr", name: "Türkçe" },
 ];
 
 /** Where to report a bad translation. Beta languages depend on it. */
-export const TRANSLATION_ISSUE_URL = "https://github.com/Coffey-Labs/ihasmail/issues/new?title=Translation%3A%20";
+export const TRANSLATION_ISSUE_URL = "https://git.coffeylabs.org/coffey-labs/ihasmail/issues/new?title=Translation%3A%20";
 
 export const DEFAULT_UI_LANGUAGE = "en";
 
 /**
  * The language to actually render in.
  *
- * A stored preference is only honoured if its strings are still shipped: a
- * catalogue can be withdrawn, and an account carrying `de` from another
+ * A stored preference is only honored if its strings are still shipped: a
+ * catalog can be withdrawn, and an account carrying `de` from another
  * machine must not leave this one claiming to be German while showing English.
  */
 export function resolveUiLanguage(stored: string | undefined | null): string {

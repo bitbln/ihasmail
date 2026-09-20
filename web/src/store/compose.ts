@@ -1,18 +1,21 @@
 import { create } from "zustand";
-import { client, setErrorMessage } from "@/jmap/client";
+import { ApiError, client, setErrorMessage } from "@/jmap/client";
 import type { Email, EmailAddress, EmailBodyPart, Id, Identity, SetResponse } from "@/jmap/types";
 import { formatFullDate, uid } from "@/lib/format";
 import { formatAddress, parseMailto, sameAddress, uniqueAddresses } from "@/lib/address";
-import { escapeHtml, htmlToText, quoteText, replySubject, textToHtml } from "@/lib/text";
-import { sanitizeEmailHtml, sanitizeEditorHtml } from "@/lib/html";
+import { escapeHtml, htmlToText, quoteText, replySubject, textToHtml } from "@/lib/text/text";
+import { hasHtmlAlternative, sanitizeEmailHtml, sanitizeEditorHtml } from "@/lib/text/html";
+import { remoteImagesAllowed, restoreBlockedImages, unproxyImages } from "@/lib/mail/remoteImages";
 import { toast } from "@/ui/toast";
 import { useMail, FULL_PROPS, BODY_PROPS } from "./mail";
+import { useSession } from "./session";
 import { ensureScheduledMailbox, useScheduled } from "./scheduled";
 import { formatScheduleTime, holdUntil } from "@/lib/schedule";
 import { t as translate } from "@/lib/i18n";
 import { BASE_PATH } from "@/lib/basePath";
-import { settings } from "./settings";
-import { emlFilename } from "@/lib/emlName";
+import { settings, type Template } from "./settings";
+import { useContacts } from "./contacts";
+import { emlFilename } from "@/lib/text/emlName";
 import { fillPlaceholders, type PlaceholderContext } from "@/lib/templatePlaceholders";
 import { shareBody, type SharedContent } from "@/lib/shareTarget";
 
@@ -74,15 +77,37 @@ export interface Draft {
   /** Original identity signature HTML currently embedded, to replace on identity switch. */
   signatureHtml: string;
   replyMode: "reply" | "replyAll" | "forward" | null;
+  /**
+   * The quoted message as it was prepared in each format, kept so that
+   * switching format re-attaches the original rather than a conversion of
+   * whatever the other format flattened it into. Empty on a draft that quotes
+   * nothing.
+   */
+  quoteHtml: string;
+  quoteText: string;
+  /**
+   * The format the message being answered was written in, when it is not the
+   * one this draft opened in (#407). The composer offers the switch; answering
+   * it either way, or dismissing it, clears this.
+   */
+  formatOffer: "html" | "text" | null;
   mailboxIdOnSend?: Id | null;
   /** When set, hand the message to the server held until this instant. */
   sendAt: number | null;
+  /**
+   * The Message-ID this draft goes out under, fixed at its first send and
+   * kept if the draft comes back after a failure. Sending it again asks the
+   * server first whether a message with this id already went out.
+   */
+  sendMessageId?: string;
 }
 
 interface ComposeState {
   drafts: Draft[];
   activeKey: string | null;
-  pendingSends: Record<string, { timer: number; toastId: number; draft: Draft }>;
+  pendingSends: Record<string, { timer: number; toastId: number; draft: Draft; run: () => Promise<void> }>;
+  /** Send everything still inside its undo window now. For signing out, while the session can still send. */
+  flushPendingSends(): Promise<void>;
   open(init?: Partial<Draft>): string;
   /** Open a draft holding what the operating system's share sheet sent us. */
   openFromShare(share: SharedContent): string;
@@ -103,7 +128,7 @@ interface ComposeState {
   send(key: string): Promise<void>;
   undoSend(key: string): void;
   setIdentity(key: string, identityId: Id): void;
-  insertTemplate(key: string, html: string, subject?: string): void;
+  insertTemplate(key: string, template: Pick<Template, "html" | "subject" | "to" | "cc" | "bcc">): void;
 }
 
 const AUTOSAVE_MS = 20_000;
@@ -134,7 +159,7 @@ function blankDraft(init: Partial<Draft> = {}): Draft {
     showBcc: false,
     showReplyTo: false,
     minimized: false,
-    maximized: false,
+    maximized: s.composeMaximized,
     dirty: false,
     savedAt: null,
     saving: false,
@@ -142,9 +167,37 @@ function blankDraft(init: Partial<Draft> = {}): Draft {
     error: null,
     signatureHtml: "",
     replyMode: null,
+    quoteHtml: "",
+    quoteText: "",
+    formatOffer: null,
     sendAt: null,
     ...init,
   };
+}
+
+/**
+ * Whether this message's remote images may be fetched into a composer.
+ *
+ * The same question the reader answered, asked with the same inputs: the
+ * policy, the trusted senders, whether the sender is a contact, and whether
+ * the reader pressed "Show images" on this message.
+ */
+/** Whether this deployment fetches remote images through its own server. */
+function imageProxyOn(): boolean {
+  return useSession.getState().session?.ihasmail?.imageProxy ?? true;
+}
+
+function remoteImagesForMessage(email: Email): boolean {
+  const s = settings();
+  const from = email.from?.[0]?.email;
+  const contacts = useContacts.getState();
+  return remoteImagesAllowed({
+    from,
+    policy: s.imagePolicy,
+    trusted: s.trustedImageSenders,
+    inContacts: Boolean(from && contacts.loaded && contacts.lookupByEmail(from)),
+    shown: Boolean(useMail.getState().imagesShown[email.id]),
+  });
 }
 
 export function signatureBlock(identity: Identity | undefined, format: "html" | "text"): string {
@@ -240,7 +293,7 @@ export const useCompose = create<ComposeState>((set, get) => ({
       showCc: Boolean(full.cc?.length),
       showBcc: Boolean(full.bcc?.length),
       subject: full.subject ?? "",
-      html: html ? sanitizeEmailHtml(html, { cidMap, allowRemote: true }).html : textToHtml(text).replace(/\n/g, "<br>"),
+      html: html ? sanitizeEmailHtml(html, { cidMap, allowRemote: remoteImagesForMessage(full), proxyRemote: imageProxyOn(), dropStyleBlocks: true }).html : textToHtml(text).replace(/\n/g, "<br>"),
       text: text || (html ? htmlToText(html) : ""),
       format: html ? "html" : settings().composeFormat,
       attachments,
@@ -306,7 +359,7 @@ export const useCompose = create<ComposeState>((set, get) => ({
       showCc: Boolean(full.cc?.length),
       showBcc: Boolean(full.bcc?.length),
       subject: full.subject ?? "",
-      html: html ? sanitizeEmailHtml(html, { cidMap, allowRemote: true }).html : textToHtml(text).replace(/\n/g, "<br>"),
+      html: html ? sanitizeEmailHtml(html, { cidMap, allowRemote: remoteImagesForMessage(full), proxyRemote: imageProxyOn(), dropStyleBlocks: true }).html : textToHtml(text).replace(/\n/g, "<br>"),
       text: text || (html ? htmlToText(html) : ""),
       format: html ? "html" : settings().composeFormat,
       attachments,
@@ -363,6 +416,19 @@ export const useCompose = create<ComposeState>((set, get) => ({
         // Addressed only to myself, or only in Cc: there is still somebody this
         // is a reply to, and an empty To is not it.
         if (!to.length) { to = cc.length ? cc : withoutOwn(full.cc ?? []); cc = []; }
+        /*
+         * Nobody but me on the message, and a Reply-To pointing somewhere that
+         * is not mine: that address is who this is really from.
+         *
+         * A contact form is the shape of it -- From and To are both the site's
+         * own mailbox, and the person who filled the form in is in Reply-To.
+         * The address test above calls that mine, correctly as far as it goes,
+         * and the fallback then addressed the reply to my own desk (#415).
+         *
+         * After the Cc, not before it: a message I really did send carries my
+         * own Reply-To, and somebody I actually wrote to beats it.
+         */
+        if (!to.length) to = withoutOwn(full.replyTo ?? []);
         if (!to.length) to = uniqueAddresses([...(full.to ?? []), ...(full.cc ?? [])]);
       } else {
         to = uniqueAddresses(full.replyTo?.length ? full.replyTo : (full.from ?? []));
@@ -376,6 +442,13 @@ export const useCompose = create<ComposeState>((set, get) => ({
     const textPart = full.textBody?.[0];
     const origHtml = htmlPart?.partId ? (full.bodyValues?.[htmlPart.partId]?.value ?? "") : "";
     const origText = textPart?.partId ? (full.bodyValues?.[textPart.partId]?.value ?? "") : "";
+    /*
+     * What the message being answered was really written in. `htmlBody` is
+     * derived, so its presence proves nothing -- hasHtmlAlternative() reads the
+     * part's own type. Getting this wrong would offer every plain-text message
+     * a switch to rich text it does not need.
+     */
+    const origFormat = hasHtmlAlternative(htmlPart, origHtml) ? "html" : "text";
     const accountId = mail.accountId!;
     const attachments: ComposeAttachment[] = [];
     const cidMap: Record<string, string> = {};
@@ -386,9 +459,21 @@ export const useCompose = create<ComposeState>((set, get) => ({
         attachments.push({ id: uid("a"), name: a.name ?? "attachment", type: a.type, size: a.size, blobId: a.blobId, progress: 100, error: null, cid: a.cid ?? undefined, inline });
       }
     }
+    /*
+     * Quoting renders the message a second time, so the reader's decision
+     * about its remote images applies here too: a quote that fetched what
+     * they declined would report the message read to whoever was counting
+     * (#410). Blocked images keep their address and get it back on the way
+     * out, so the recipient's copy is the quote as its sender wrote it.
+     */
+    const allowRemote = remoteImagesForMessage(full);
+    // Fetched through this server while the reply is written, as reading the
+    // message does, and pointed back at their own addresses on the way out
+    // (#412).
+    const proxyRemote = imageProxyOn();
     // Inline images are shown via their blob URLs in the editor and converted back to cid: at send time.
     const quotedHtmlBody = origHtml
-      ? sanitizeEmailHtml(origHtml, { cidMap, allowRemote: true, proxyRemote: false }).html
+      ? sanitizeEmailHtml(origHtml, { cidMap, allowRemote, proxyRemote, dropStyleBlocks: true }).html
       : textToHtml(origText).replace(/\n/g, "<br>");
     const fromStr = escapeHtml((full.from ?? []).map(formatAddress).join(", "));
     const date = formatFullDate(full.receivedAt);
@@ -431,6 +516,9 @@ export const useCompose = create<ComposeState>((set, get) => ({
       relatedKeyword: mode === "forward" ? "$forwarded" : "$answered",
       signatureHtml: sigHtml,
       replyMode: mode,
+      quoteHtml,
+      quoteText: quoteTxt,
+      formatOffer: origFormat === s.composeFormat ? null : origFormat,
     });
     set((st) => ({ drafts: [...st.drafts, d], activeKey: d.key }));
     return d.key;
@@ -598,8 +686,12 @@ export const useCompose = create<ComposeState>((set, get) => ({
   },
 
   async send(key) {
-    const d = get().drafts.find((x) => x.key === key);
-    if (!d) return;
+    const found = get().drafts.find((x) => x.key === key);
+    if (!found) return;
+    // A draft that already has a Message-ID has been sent before, and failed.
+    const retry = Boolean(found.sendMessageId);
+    const fromEmail = (useMail.getState().identities.find((i) => i.id === found.identityId) ?? useMail.getState().identities[0])?.email ?? "";
+    const d: Draft = { ...found, sendMessageId: found.sendMessageId ?? newMessageId(fromEmail) };
     const delay = settings().undoSendSeconds;
     // A schedule the user left sitting until it passed is just a send now.
     const scheduling = d.sendAt !== null && d.sendAt > Date.now();
@@ -614,16 +706,32 @@ export const useCompose = create<ComposeState>((set, get) => ({
         return { pendingSends: rest };
       });
       try {
-        await sendInternal(d, get);
+        const sent = await sendInternal(d, get, { retry });
+        if (sent.alreadySent) {
+          toast.success(translate("This message had already been sent, so it wasn't sent again."));
+          return;
+        }
+        // Everyone written to who is not a contact yet, so they are suggested on every device.
+        if (settings().collectRecipients) {
+          const own = useMail.getState().identities.map((i) => i.email);
+          void useContacts.getState().collectRecipients([...d.to, ...d.cc, ...d.bcc], own).catch(() => undefined);
+        }
         toast.success(scheduling ? translate("Send scheduled for {when}", { when: formatScheduleTime(new Date(d.sendAt!)) }) : translate("Message sent"));
       } catch (err) {
+        if (err instanceof SendOutcomeUnknown) {
+          toast.error(err.message, {
+            action: { label: translate("Open draft"), onClick: () => set((s) => ({ drafts: [...s.drafts, { ...d, sending: false, error: err.message }], activeKey: d.key })) },
+            duration: 30000,
+          });
+          return;
+        }
         toast.error(translate("Send failed: {error}", { error: (err as Error).message }), {
           action: { label: translate("Open draft"), onClick: () => set((s) => ({ drafts: [...s.drafts, { ...d, sending: false, error: (err as Error).message }], activeKey: d.key })) },
           duration: 15000,
         });
       }
     };
-    // A scheduled send is already delayed, and cancelling it is a server-side
+    // A scheduled send is already delayed, and canceling it is a server-side
     // operation from the Scheduled folder -- holding it locally first would
     // only add a second, different kind of undo.
     if (delay <= 0 || scheduling) {
@@ -632,7 +740,16 @@ export const useCompose = create<ComposeState>((set, get) => ({
     }
     const toastId = toast.show(translate("Sending…"), { duration: delay * 1000, progress: true, action: { label: translate("Undo"), onClick: () => get().undoSend(key) } });
     const timer = window.setTimeout(() => void doSend(), delay * 1000);
-    set((s) => ({ pendingSends: { ...s.pendingSends, [key]: { timer, toastId, draft: d } } }));
+    set((s) => ({ pendingSends: { ...s.pendingSends, [key]: { timer, toastId, draft: d, run: doSend } } }));
+  },
+
+  async flushPendingSends() {
+    const pending = Object.values(get().pendingSends);
+    for (const p of pending) {
+      window.clearTimeout(p.timer);
+      toast.dismiss(p.toastId);
+    }
+    await Promise.all(pending.map((p) => p.run()));
   },
 
   undoSend(key) {
@@ -668,20 +785,34 @@ export const useCompose = create<ComposeState>((set, get) => ({
     get().update(key, { identityId, html, text, signatureHtml: newSig, ...replyToPatch });
   },
 
-  insertTemplate(key, html, subject) {
+  insertTemplate(key, { html, subject, to = [], cc = [], bcc = [] }) {
     const d = get().drafts.find((x) => x.key === key);
     if (!d) return;
+    // The template's recipients join the ones already there. An address that
+    // is already on the message, in any field, stays where it is rather than
+    // appearing twice.
+    const present = [...d.to, ...d.cc, ...d.bcc];
+    const added = (list: EmailAddress[]) => {
+      const fresh = uniqueAddresses(list).filter((a) => !present.some((p) => sameAddress(p.email, a.email)));
+      present.push(...fresh);
+      return fresh;
+    };
+    const recipients = { to: [...d.to, ...added(to)], cc: [...d.cc, ...added(cc)], bcc: [...d.bcc, ...added(bcc)] };
     // Placeholders are filled against the draft as it stands right now, which
     // is why this happens on insert rather than on send: what the template is
     // filled with is visible and editable afterwards, instead of changing
-    // under the message between writing it and sending it.
+    // under the message between writing it and sending it. The template's own
+    // recipients count, so {{recipientName}} can name the person it is for.
     const ident = d.identityId ? useMail.getState().identities.find((i) => i.id === d.identityId) : undefined;
-    const ctx: PlaceholderContext = { to: d.to, from: ident ? { name: ident.name, email: ident.email } : null, subject: d.subject };
+    const ctx: PlaceholderContext = { to: recipients.to, from: ident ? { name: ident.name, email: ident.email } : null, subject: d.subject };
     // The body is filled once as HTML and the plain-text side derived from the
     // result, so the two cannot disagree about what a placeholder came to.
     const filled = fillPlaceholders(html, ctx, { html: true });
     const patch: Partial<Draft> = { html: `<div>${sanitizeEditorHtml(filled)}</div>${d.html}`, text: `${htmlToText(filled)}\n${d.text}` };
     if (subject && !d.subject) patch.subject = fillPlaceholders(subject, ctx, { html: false });
+    if (recipients.to.length !== d.to.length) patch.to = recipients.to;
+    if (recipients.cc.length !== d.cc.length) Object.assign(patch, { cc: recipients.cc, showCc: true });
+    if (recipients.bcc.length !== d.bcc.length) Object.assign(patch, { bcc: recipients.bcc, showBcc: true });
     get().update(key, patch);
   },
 }));
@@ -742,7 +873,9 @@ export async function buildEmailObject(d: Draft, opts: { forSend: boolean; mailb
   if (!ident) throw new Error(translate("No sending identity available"));
   const from: EmailAddress = { name: ident.name || null, email: ident.email };
 
-  let html = d.format === "html" ? d.html : "";
+  // Images blocked when the message was quoted keep their address; the copy
+  // that leaves carries it, and the recipient's client decides for itself.
+  let html = d.format === "html" ? unproxyImages(restoreBlockedImages(d.html)) : "";
   const text = d.format === "html" ? htmlToText(d.html) : d.text;
 
   // Inline attachments shown via blob URLs in the editor → back to cid: references.
@@ -915,7 +1048,50 @@ export function buildSubmission(opts: {
   };
 }
 
-async function sendInternal(d: Draft, _get: () => ComposeState): Promise<void> {
+/**
+ * A send whose outcome nobody can state: the request went out, no answer came
+ * back, and the server could not be asked afterwards either. Offering a plain
+ * "send again" here is how one message is delivered twice.
+ */
+export class SendOutcomeUnknown extends Error {}
+
+/** A Message-ID for one send, on the sending identity's domain (RFC 5322 §3.6.4). */
+export function newMessageId(fromEmail: string): string {
+  const domain = fromEmail.split("@")[1] || "localhost";
+  return `${crypto.randomUUID()}@${domain}`;
+}
+
+/**
+ * Whether a failed request may still have been carried out. A refusal (4xx)
+ * means the server did not run it; no answer, or a 5xx from the proxy that
+ * lost the upstream reply, means it may have.
+ */
+export function sendOutcomeUnknown(err: unknown): boolean {
+  if (err instanceof ApiError) return err.status >= 500 || err.status === 408;
+  return true;
+}
+
+/**
+ * What became of a send with this Message-ID.
+ *
+ * `sent`: a message carrying it exists and was submitted. `orphan`: it exists
+ * but no submission does, so it was created and never sent. `none`: nothing.
+ *
+ * Stalwart expunges submissions after its hold period, so "no submission"
+ * means unsent only right after the attempt (`justNow`). Later, a message
+ * still carrying the id is taken as sent: every path that fails a send
+ * destroys the copy it created.
+ */
+export async function traceSend(accountId: Id, messageId: string, justNow: boolean): Promise<{ trace: "sent" | "orphan" | "none"; emailIds: Id[] }> {
+  const q = await client.call<{ ids: Id[] }>("Email/query", { accountId, filter: { header: ["Message-ID", messageId] } });
+  const emailIds = q.ids ?? [];
+  if (!emailIds.length) return { trace: "none", emailIds };
+  if (!justNow) return { trace: "sent", emailIds };
+  const subs = await client.call<{ ids: Id[] }>("EmailSubmission/query", { accountId, filter: { emailIds } });
+  return { trace: subs.ids?.length ? "sent" : "orphan", emailIds };
+}
+
+async function sendInternal(d: Draft, _get: () => ComposeState, opts: { retry?: boolean } = {}): Promise<{ alreadySent?: boolean }> {
   const mail = useMail.getState();
   const accountId = mail.accountId!;
   const ident = mail.identities.find((i) => i.id === d.identityId) ?? mail.identities[0];
@@ -924,6 +1100,27 @@ async function sendInternal(d: Draft, _get: () => ComposeState): Promise<void> {
   const scheduled = d.sendAt !== null && d.sendAt > Date.now();
   const scheduledId = scheduled ? await ensureScheduledMailbox() : null;
   const email = await buildEmailObject(d, { forSend: true, mailboxId: scheduledId });
+  const messageId = d.sendMessageId ?? newMessageId(ident.email);
+  email.messageId = [messageId];
+  /*
+   * Sending again a draft that came back from a failed send: ask first. The
+   * failure may have been only the reply going missing, and a second
+   * submission would deliver the message twice.
+   */
+  if (opts.retry) {
+    let found: Awaited<ReturnType<typeof traceSend>>;
+    try {
+      found = await traceSend(accountId, messageId, false);
+    } catch {
+      throw new SendOutcomeUnknown(translate("Couldn't check whether this message was already sent. Check Sent before sending it again."));
+    }
+    if (found.trace === "sent") {
+      if (d.draftId) void client.call("Email/set", { accountId, destroy: [d.draftId] });
+      void mail.loadMailboxes();
+      void mail.refreshList();
+      return { alreadySent: true };
+    }
+  }
   const sentId = mail.roleId("sent");
   const draftsId = mail.roleId("drafts");
   const rcpts = uniqueAddresses([...d.to, ...d.cc, ...d.bcc]).map((a) => ({ email: a.email }));
@@ -949,7 +1146,27 @@ async function sendInternal(d: Draft, _get: () => ComposeState): Promise<void> {
   if (d.relatedEmailId && d.relatedKeyword) {
     calls.push(["Email/set", { accountId, update: { [d.relatedEmailId]: { [`keywords/${d.relatedKeyword}`]: true } } }, "k"]);
   }
-  const res = await client.chain(calls, { allowErrors: true });
+  let res: Awaited<ReturnType<typeof client.chain>>;
+  try {
+    res = await client.chain(calls, { allowErrors: true });
+  } catch (err) {
+    if (!sendOutcomeUnknown(err)) throw err;
+    // No answer is not a no: find out what the server did with it.
+    let found: Awaited<ReturnType<typeof traceSend>>;
+    try {
+      found = await traceSend(accountId, messageId, true);
+    } catch {
+      throw new SendOutcomeUnknown(translate("Couldn't confirm whether this message was sent. Check Sent before sending it again."));
+    }
+    if (found.trace === "sent") {
+      void mail.loadMailboxes();
+      void mail.refreshList();
+      return {};
+    }
+    // Created but never submitted: take it out of Sent, then report the failure.
+    if (found.trace === "orphan") void client.call("Email/set", { accountId, destroy: found.emailIds });
+    throw err;
+  }
   const e = res.get("e")?.[0] as unknown as SetResponse<Email> & { __error?: { type: string; description?: string } };
   if (e.__error) throw new Error(setErrorMessage(e.__error));
   if (e.notCreated?.m) throw new Error(setErrorMessage(e.notCreated.m));
@@ -981,6 +1198,7 @@ async function sendInternal(d: Draft, _get: () => ComposeState): Promise<void> {
   }
   void mail.loadMailboxes();
   void mail.refreshList();
+  return {};
 }
 
 export { FULL_PROPS, BODY_PROPS };
@@ -999,3 +1217,28 @@ export function draftFromMailto(url: string): Partial<Draft> {
     ...(body ? { html: body, text: m.body } : {}),
   };
 }
+
+/*
+ * Nothing written in one session is left for the next.
+ *
+ * The other stores let go of their data when the session ends; this one used
+ * to keep its open composers, so on a shared machine the next person to sign
+ * in -- without a reload, after an idle sign-out, say -- found the last one's
+ * draft open and could send it. A draft that was saved is still in Drafts on
+ * the server. A send still in its undo window was sent on the way out if the
+ * sign-out was a deliberate one (see `logout`); if the session had already
+ * ended there is nothing left to send it with, so its timer is stopped rather
+ * than let it fire under whoever signs in next.
+ */
+useSession.subscribe((s) => {
+  if (s.status !== "anonymous") return;
+  const { drafts, pendingSends } = useCompose.getState();
+  if (!drafts.length && !Object.keys(pendingSends).length) return;
+  for (const t of autosaveTimers.values()) window.clearTimeout(t);
+  autosaveTimers.clear();
+  for (const p of Object.values(pendingSends)) {
+    window.clearTimeout(p.timer);
+    toast.dismiss(p.toastId);
+  }
+  useCompose.setState({ drafts: [], activeKey: null, pendingSends: {} });
+});

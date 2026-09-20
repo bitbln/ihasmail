@@ -10,14 +10,25 @@ import { formatDate, formatDateLong } from "@/lib/datetime";
 import { Avatar, Empty, Spinner, useIsNarrow } from "@/ui/misc";
 import { confirmDialog } from "@/ui/dialog";
 import { toast } from "@/ui/toast";
+import { Splitter } from "@/ui/Splitter";
+import { useSettings } from "@/store/settings";
 import { ContactEditor } from "./ContactEditor";
 import { avatarColor } from "@/lib/address";
 import { plural, t as translate } from "@/lib/i18n";
+import { downloadFile } from "@/lib/download";
 
 export function ContactsView({ id }: { id?: string }) {
   const [, navigate] = useLocation();
   const contacts = useContacts();
   const narrow = useIsNarrow();
+  const listWidth = useSettings((s) => s.settings.contactsListWidth);
+  const updateSettings = useSettings((s) => s.update);
+  const layoutRef = useRef<HTMLDivElement>(null);
+  /* The width mid-drag, and a ref mirroring it for the end of a key press,
+     which follows the resize in the same tick -- the same pair as the mail
+     list's splitter, for the same reason. */
+  const [liveWidth, setLiveWidth] = useState<number | null>(null);
+  const liveWidthRef = useRef<number | null>(null);
   const [q, setQ] = useState("");
   /* The book being shown lives in the store, because the list that chooses it
      is the app's own sidebar rather than anything this view owns. */
@@ -139,10 +150,7 @@ export function ContactsView({ id }: { id?: string }) {
       toast.error(translate("There is nothing in it to export"));
       return;
     }
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([cards.map(toVCard).join("")], { type: "text/vcard" }));
-    a.download = "contacts.vcf";
-    a.click();
+    downloadFile(cards.map(toVCard).join(""), "text/vcard", "contacts.vcf");
   };
 
   const importFile = async (f: File, intoBookId?: string) => {
@@ -240,8 +248,23 @@ export function ContactsView({ id }: { id?: string }) {
     }
   };
 
+  const shownListWidth = liveWidth ?? listWidth;
+  const onSplit = (delta: number) => {
+    const total = layoutRef.current?.clientWidth ?? 1200;
+    const max = Math.max(240, total - 360);
+    const next = Math.min(max, Math.max(240, (liveWidthRef.current ?? shownListWidth) + delta));
+    liveWidthRef.current = next;
+    setLiveWidth(next);
+  };
+  const onSplitEnd = () => {
+    const width = liveWidthRef.current;
+    liveWidthRef.current = null;
+    setLiveWidth(null);
+    if (width != null) updateSettings({ contactsListWidth: width });
+  };
+
   return (
-    <div className={`contacts-layout ${selected || editing ? "detail" : ""}`}>
+    <div ref={layoutRef} className={`contacts-layout ${selected || editing ? "detail" : ""}`} style={{ "--list-size": `${shownListWidth}px` } as React.CSSProperties}>
 
       <section className="contacts-list">
         {pickedIds.length ? (
@@ -278,7 +301,8 @@ export function ContactsView({ id }: { id?: string }) {
               <div className="contact-letter">{g.letter}</div>
               {g.items.map((c) => {
                 const email = contactEmails(c)[0]?.email;
-                const photo = contacts.accountId ? contactPhoto(c, contacts.accountId) : null;
+                const photoAccount = contacts.accountOfCard(c.id) ?? contacts.accountId;
+                const photo = photoAccount ? contactPhoto(c, photoAccount) : null;
                 return (
                   <div key={c.id} className={`contact-row ${id === c.id ? "active" : ""} ${picked[c.id] ? "picked" : ""}`} onClick={() => navigate(`/contacts/${c.id}`)}>
                     {!readOnly && (
@@ -303,6 +327,7 @@ export function ContactsView({ id }: { id?: string }) {
           ))}
         </div>
       </section>
+      {!narrow && <Splitter direction="vertical" onResize={onSplit} onEnd={onSplitEnd} onReset={() => updateSettings({ contactsListWidth: 320 })} ariaLabel={translate("Resize contact list")} />}
 
       <section className="contact-detail">
         {selected ? (
@@ -319,7 +344,8 @@ export function ContactsView({ id }: { id?: string }) {
 function ContactDetail({ card: c, onBack, onEdit, narrow, onEmail }: { card: ContactCard; onBack: () => void; onEdit: () => void; narrow: boolean; onEmail: (addr: string) => void }) {
   const contacts = useContacts();
   const [, navigate] = useLocation();
-  const photo = contacts.accountId ? contactPhoto(c, contacts.accountId) : null;
+  const photoAccount = contacts.accountOfCard(c.id) ?? contacts.accountId;
+  const photo = photoAccount ? contactPhoto(c, photoAccount) : null;
   const name = contactDisplayName(c);
   const org = Object.values(c.organizations ?? {})[0];
   const title = Object.values(c.titles ?? {})[0];
@@ -333,7 +359,7 @@ function ContactDetail({ card: c, onBack, onEdit, narrow, onEmail }: { card: Con
         {narrow && <button className="icon-btn" onClick={onBack} aria-label={translate("Back")}><ArrowLeft size={20} /></button>}
         <span className="spacer" />
         <button className="btn btn-sm" onClick={onEdit}><Pencil size={14} />  {translate("Edit")}</button>
-        <button className="btn btn-sm" onClick={() => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([toVCard(c)], { type: "text/vcard" })); a.download = `${name.replace(/[^\w.-]+/g, "_")}.vcf`; a.click(); }}><Download size={14} />  {translate("vCard")}</button>
+        <button className="btn btn-sm" onClick={() => downloadFile(toVCard(c), "text/vcard", `${name.replace(/[^\w.-]+/g, "_")}.vcf`)}><Download size={14} />  {translate("vCard")}</button>
         <button className="btn btn-sm btn-ghost" style={{ color: "var(--danger)" }} onClick={async () => { if (await confirmDialog({ title: translate("Delete {name}?", { name }), confirmLabel: translate("Delete"), danger: true })) { try { const { destroyed, refused } = await contacts.destroyCards([c.id]); if (!destroyed) { toast.error(refused ? setErrorMessage(refused) : translate("It was not deleted")); return; } toast.success(translate("Contact deleted")); navigate("/contacts"); } catch (err) { toast.error((err as Error).message); } } }}><Trash2 size={14} /></button>
       </div>
       <div className="contact-hero">

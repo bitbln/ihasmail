@@ -38,6 +38,10 @@ export interface JmapSession {
     server?: {
       /** "oss" | "community" | "enterprise". Stalwart publishes no version. */
       edition?: string | null;
+      /** Where Stalwart's own administration is (STALWART_ADMIN_URL), for a session that may administer. */
+      adminUrl?: string | null;
+      /** SHOW_ENTERPRISE_NOTICES: an Enterprise-only section says so even on Enterprise. */
+      enterpriseNotices?: boolean;
     };
     /**
      * False when this session may not administer: the operator turned it off,
@@ -248,7 +252,8 @@ export interface Email {
   attachments?: EmailBodyPart[];
   headers?: EmailHeader[];
   // convenience header fetches
-  "header:List-Unsubscribe:asText"?: string | null;
+  /** RFC 2369 defines List-Unsubscribe, so asText is not a form it has (RFC 8621 §4.1.2.3). */
+  "header:List-Unsubscribe:asURLs"?: string[] | null;
   "header:List-Unsubscribe-Post:asText"?: string | null;
   "header:List-Id:asText"?: string | null;
   "header:Disposition-Notification-To:asAddresses"?: EmailAddress[] | null;
@@ -257,11 +262,11 @@ export interface Email {
   "header:Auto-Submitted:asText"?: string | null;
   /** Bulk/list mail marks itself here; read receipts for it only confirm the address. */
   "header:Precedence:asText"?: string | null;
-  "header:Return-Path:asText"?: string | null;
   "header:Authentication-Results:asText"?: string | null;
-  "header:Received:asText:all"?: string[] | null;
   "header:X-Spam-Status:asText"?: string | null;
   "header:X-Spam-Result:asText"?: string | null;
+  /** The language model's opinion, when AI spam classification is on (lib/llmOpinion). */
+  "header:X-Spam-LLM:asText"?: string | null;
 }
 
 export interface Thread {

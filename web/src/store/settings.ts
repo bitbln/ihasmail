@@ -6,14 +6,15 @@ import type { SortLevel, SortPreset } from "@/lib/listSort";
 import { pendingSettingsKeys, queueSettingsPush } from "@/lib/settingsSync";
 import { policyChanges, policyDefaults, policyEnforced, type PolicyChange } from "@/lib/settingsPolicy";
 import { setDateTimePrefs, setUiLanguageForFormatting, type DateFormat, type TimeFormat } from "@/lib/datetime";
-import type { SwipeAction } from "@/lib/swipe";
+import type { SwipeAction } from "@/lib/input/swipe";
+import type { EmailAddress } from "@/jmap/types";
 import { resolveUiLanguage } from "@/lib/languages";
 import { loadLanguage } from "@/lib/i18n";
 
 /**
  * "ihasmail" is a dark theme carrying the palette from ihasmail.org. It is a
  * theme rather than an accent because it changes the backgrounds, borders and
- * text as well as the highlight colour — an accent could not.
+ * text as well as the highlight color — an accent could not.
  */
 export type Theme = "system" | "light" | "dark" | "ihasmail";
 export type Density = "comfortable" | "cozy" | "compact";
@@ -55,6 +56,10 @@ export interface Template {
   name: string;
   subject: string;
   html: string;
+  /** Recipients added to the message when the template is inserted. Older templates have none. */
+  to?: EmailAddress[];
+  cc?: EmailAddress[];
+  bcc?: EmailAddress[];
 }
 
 /** A signer remembered for an address. See `knownSigners`. */
@@ -83,7 +88,7 @@ export interface Settings {
    * which is the half that stops an older device showing a theme nobody chose.
    */
   theme: Theme;
-  /** The colours. */
+  /** The colors. */
   palette: PaletteId;
   /** Light, dark, or whatever the system says. */
   mode: Mode;
@@ -131,7 +136,7 @@ export interface Settings {
   /** Let messages follow the app's light/dark theme instead of always sitting on white. */
   themeMessageBody: boolean;
   /**
-   * Extend that to mail which brings colours of its own.
+   * Extend that to mail which brings colors of its own.
    *
    * Only meaningful with `themeMessageBody` on. Off by default because it
    * cannot be done perfectly: see `markKeptSurfaces` in lib/html.ts for the
@@ -207,6 +212,15 @@ export interface Settings {
    */
   birthdayCalendar: boolean;
   /**
+   * Save everyone written to who is not a contact yet, in an address book of
+   * its own, so they are suggested on every device rather than only in the
+   * browser that sent the message. On by default, as mail clients do; the
+   * address book can be emptied or deleted like any other.
+   */
+  collectRecipients: boolean;
+  /** The address book collected recipients go to, once there is one. */
+  collectedBookId: string | null;
+  /**
    * Calendars subscribed to by URL. The subscription is the setting; the
    * events themselves are fetched on demand and never stored, so this follows
    * the account the way every other preference does and costs nothing to sync.
@@ -225,8 +239,8 @@ export interface Settings {
   templates: Template[];
   labels: Label[];
   /**
-   * Folder colours, by mailbox id. Local to this browser, like every other
-   * colour here: JMAP has nowhere on a Mailbox to keep one.
+   * Folder colors, by mailbox id. Local to this browser, like every other
+   * color here: JMAP has nowhere on a Mailbox to keep one.
    */
   folderColors: Record<string, string>;
   sidebarCollapsed: boolean;
@@ -251,11 +265,18 @@ export interface Settings {
   archiveOnReply: boolean;
   autoAdvance: "newer" | "older" | "list";
   spellcheck: boolean;
+  /**
+   * Open every new composer full screen (#401). Desktop only: on a phone the
+   * composer fills the screen already and has no size to choose.
+   */
+  composeMaximized: boolean;
   sendAndArchive: boolean;
   /** Width (px) of the message list when the reading pane is on the right. */
   listPaneWidth: number;
   /** Height (px) of the message list when the reading pane is below. */
   listPaneHeight: number;
+  /** Width (px) of the contact list, beside the contact on show. */
+  contactsListWidth: number;
   /**
    * Width (px) of the sidebar, dragged by its edge (#345). Null until someone
    * drags it, and null again after a double-click resets it -- which leaves the
@@ -263,7 +284,7 @@ export interface Settings {
    * sidebar with their own CSS keeps what they had until they choose otherwise.
    */
   sidebarWidth: number | null;
-  /** Outlook-style colour categories for calendar events. */
+  /** Outlook-style color categories for calendar events. */
   eventCategories: Array<{ name: string; color: string }>;
   /** Default sending identity per account (JMAP has no such flag). */
   defaultIdentityByAccount: Record<string, string>;
@@ -354,6 +375,8 @@ export const DEFAULT_SETTINGS: Settings = {
   timeZone: null,
   labelsSidebar: true,
   birthdayCalendar: false,
+  collectRecipients: true,
+  collectedBookId: null,
   icalSubscriptions: [],
   listSortPreset: "newest",
   listSortLevels: [],
@@ -374,9 +397,11 @@ export const DEFAULT_SETTINGS: Settings = {
   archiveOnReply: false,
   autoAdvance: "list",
   spellcheck: true,
+  composeMaximized: false,
   sendAndArchive: false,
   listPaneWidth: 520,
   listPaneHeight: 340,
+  contactsListWidth: 320,
   sidebarWidth: null,
   eventCategories: [
     { name: "Important", color: "#dc2626" },
@@ -408,6 +433,7 @@ export const DEVICE_KEYS: ReadonlySet<keyof Settings> = new Set<keyof Settings>(
   "notificationSound",
   "listPaneWidth",
   "listPaneHeight",
+  "contactsListWidth",
   "sidebarWidth",
 ]);
 
@@ -641,7 +667,7 @@ export function applyLang(s: Settings = useSettings.getState().settings): void {
   const tag = resolveUiLanguage(s.uiLanguage);
   document.documentElement.lang = tag;
   /*
-   * The catalogue is fetched, so it lands a beat after the attribute. That
+   * The catalog is fetched, so it lands a beat after the attribute. That
    * order is deliberate: `lang` is what stops Chrome offering to translate,
    * and it should not wait on a network request to say something it already
    * knows. English needs no fetch at all and resolves immediately.
@@ -659,7 +685,7 @@ export function applyTheme(s: Settings = useSettings.getState().settings): void 
   /*
    * Two attributes, because they answer two questions. `data-theme` is the
    * mode, and every dark-only rule in the stylesheet keys off it without
-   * knowing any palette exists; `data-palette` layers the colours on top. The
+   * knowing any palette exists; `data-palette` layers the colors on top. The
    * accent variants out-specify both, which is what lets an accent still apply
    * over any palette.
    */
@@ -674,7 +700,7 @@ export function applyTheme(s: Settings = useSettings.getState().settings): void 
 }
 
 /**
- * The browser chrome colour, read from the palette's own background so it does
+ * The browser chrome color, read from the palette's own background so it does
  * not have to be listed twice and cannot drift from it.
  */
 function paletteThemeColor(palette: PaletteId, mode: "light" | "dark"): string {
@@ -720,7 +746,7 @@ export function useEffectiveTheme(): "light" | "dark" {
 export const settings = () => useSettings.getState().settings;
 
 /**
- * Primitive that changes whenever a date/time preference does, so memoised
+ * Primitive that changes whenever a date/time preference does, so memoized
  * components that render dates re-render when the format is switched.
  */
 export const dateTimeKey = (s: Settings): string => `${s.locale}|${s.dateFormat}|${s.timeFormat}`;

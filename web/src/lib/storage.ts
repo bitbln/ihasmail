@@ -8,7 +8,7 @@
  * address book on it.
  *
  * Reads are gated as well as writes. A machine that was trusted once still has
- * the residue, and honouring it would let a previous session's data surface in
+ * the residue, and honoring it would let a previous session's data surface in
  * a later untrusted one.
  */
 const PREFIX = "ihasmail:";
@@ -87,6 +87,9 @@ function ownKeys(): string[] {
 export function clearSignedInData(): void {
   for (const key of ownKeys()) {
     if (KEEP_ON_SIGN_OUT.includes(key)) continue;
+    // Each account's registered push endpoint, which is not mail
+    // and is cleared with its subscription (webpush.ts)
+    if (key.startsWith("pushEndpoint:")) continue;
     removeKey(key);
   }
 }
